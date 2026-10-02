@@ -59,24 +59,84 @@
 
 ### `search_listings`
 
-- **What it does:**
-- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" -->
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Filters the 40 listings in `data/listings.json` by price
+  ceiling and size, then ranks what's left by how many of the description's
+  keywords each one contains.
+- **Inputs:**
+  - `description` (str): the item words, e.g. `"vintage graphic tee"`.
+  - `size` (str or None): e.g. `"M"`, `"8"`, `"W30"`. `None` skips size
+    filtering.
+  - `max_price` (float or None): inclusive ceiling in dollars, so a $30.00
+    listing passes `max_price=30.0`. `None` skips price filtering.
+- **Returns:** a `list[dict]` of at most 10 listings
+  (`config.SEARCH_RESULT_LIMIT`), best match first. Each dict is one whole
+  listing with these fields:
+  - `id` (str), `title` (str), `description` (str), `category` (str)
+  - `style_tags` (list of str), `colors` (list of str)
+  - `size` (str), `condition` (str), `price` (float)
+  - `brand` (str or None), `platform` (str)
+  - *How sizes match:* a listing's size is split on `/` into whole tokens and
+    compared token by token, ignoring case. Notes in parentheses are ignored.
+    - `M` matches `S/M` and `M/L`, but `L` does **not** match `XL`.
+    - `8` matches `US 8` but not `US 8.5`.
+    - `W30` matches `W30 L30`.
+    - `small`, `medium`, `large`, and `extra large` count as `S`, `M`, `L`,
+      and `XL`.
+    - A `One Size` listing matches any size.
+  - *How results are ranked:* each listing scores one point per description
+    keyword found in its title, description, category, style tags, colors,
+    or brand. Keywords in the title count twice. Common words like "a" and
+    "for" are dropped, and a trailing "s" is ignored, so `tees` matches
+    `tee`. Ties go to the cheaper listing.
+- **When it has nothing:** an empty list `[]`, never `None` and never an
+  exception. Listings that score 0 are dropped, so an empty or all-filler
+  `description` also returns `[]`.
 
 ### `suggest_outfit`
 
-- **What it does:**
+- **What it does:** Asks the model for one or two outfits built around the new
+  item, using pieces from the user's wardrobe.
 - **Inputs:**
-- **Returns:**
+  - `new_item` (dict): one listing dict from `search_listings`.
+  - `wardrobe` (dict): `{"items": [...]}`. Each item is a dict with `id`,
+    `name`, `category`, `colors` (list), `style_tags` (list), and `notes`
+    (str or None).
+- **Returns:** a non-empty `str` with 1–2 outfit suggestions in plain text.
+  When the wardrobe has items, each outfit names the pieces exactly as they're
+  written in their `name` field.
 - **When it has nothing:**
+  - Empty wardrobe (`items` is `[]` or missing): returns general styling
+    advice for the item. Still a non-empty string, and it never claims the
+    user owns anything.
+  - Empty `new_item`: returns `"No item to style — search for something first."`
+    without calling the model.
+  - Model sends back empty text: returns a one-line message saying so instead
+    of `""`.
 
 ### `create_fit_card`
 
-- **What it does:**
+- **What it does:** Asks the model for a short caption about the find, written
+  like a real social post.
 - **Inputs:**
-- **Returns:**
+  - `outfit` (str): the outfit text `suggest_outfit` returned.
+  - `new_item` (dict): the same listing dict that went into `suggest_outfit`.
+- **Returns:** a `str` caption with 2–4 casual sentences, then 1–3 hashtags on
+  the last line.
+  - It mentions the item, its price (written like `$24`), and its platform
+    once each.
+  - It leaves the brand out when the listing has none.
+  - Wording changes from run to run (`TEMPERATURE` is 0.9).
 - **When it has nothing:**
+  - Empty or whitespace-only `outfit`: returns
+    `"Can't write a fit card without an outfit suggestion."`
+  - Empty `new_item`: returns `"Can't write a fit card without an item."`
+  - Neither case calls the model.
+  - Model sends back empty text: returns a one-line message saying so instead
+    of `""`.
+
+Both model tools go through `generate()`. If the model can't be reached at
+all, that raises `ModelUnavailable`, which the loop doesn't catch yet. That's
+unit 4.
 
 ---
 
@@ -94,12 +154,41 @@
      function have to be real. -->
 
 **Branch rule:**
+- If `search_listings` returns an empty list, the loop puts a message in
+  `session["error"]` naming what to change (the item words, the size, or the
+  max price) and stops. `suggest_outfit` is never called, and `fit_card`
+  stays `None`.
+- Otherwise it takes the first (best-scoring) result as
+  `session["selected_item"]` and goes to `suggest_outfit`, then
+  `create_fit_card`.
 
-**Where it lives:** `agent.py::run_agent`
+**Where it lives:** `agent.py::run_agent`. It's a `while` loop over named
+steps (search → suggest → card → done), and every pass calls
+`trace.check_iterations(count)`, so a runaway loop stops at
+`MAX_ITERATIONS` (10).
 
-**How the query is parsed:** <!-- regex, string splitting, or asking the model — say which -->
+**How the query is parsed:** Regex, in `agent.py::parse_query`.
+- A price phrase becomes `max_price`: `under $30`, `below 30`,
+  `less than $30`, `up to $30`, `max $30`, a bare `$30`, or `30 dollars`.
+- A size phrase becomes `size`: `size M`, `in size M`, `sz 8`.
+- Leading filler like "looking for a" is dropped.
+- Whatever is left becomes `description`.
+- A size is only read after the word "size" or "sz". So "medium wash jeans"
+  stays a description and doesn't become size M.
 
-**What moves through the session:** <!-- which fields, in what order -->
+**What moves through the session:** Each tool reads its inputs back out of the
+session, not from a local variable. The fields fill in this order:
+1. `query`
+2. `parsed` (`description`, `size`, `max_price`)
+3. `search_results`
+4. `selected_item` (which is `search_results[0]`)
+5. `outfit_suggestion`
+6. `fit_card`
+
+`steps` lists each tool call in order:
+`["search_listings", "suggest_outfit", "create_fit_card"]` on a full run, and
+`["search_listings"]` when the branch stops it. `error` is set only when the
+run stops early.
 
 ---
 
