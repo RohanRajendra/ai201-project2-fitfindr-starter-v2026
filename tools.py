@@ -54,6 +54,7 @@ def _size_tokens(size: str) -> set[str]:
         p = re.sub(r"\s+", " ", p).strip()
         p = re.sub(r"^SIZE\s+", "", p)
         p = re.sub(r"^US\s*(?=\d)", "", p)  # "US 8" -> "8", so "size 8" finds shoes
+        p = re.sub(r"^(?:EXTRA|X)[\s-]?(SMALL|LARGE)$", lambda m: "X" + m.group(1)[0], p)  # "xlarge" -> XL
         waist_length = re.fullmatch(r"(W\d+)\s*(L\d+)", p)  # "W30 L30" -> W30, L30
         if waist_length:
             tokens.update(waist_length.groups())

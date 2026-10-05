@@ -13,8 +13,8 @@
 > python app.py ask 'vintage graphic tee under $30'
 > ```
 >
-> All three tools are stubs, so that last command will do nothing useful yet.
-> That's the starting position.
+> All three tools and the planning loop are built, so that last command runs
+> the whole agent.
 >
 > **The rest of this file is your submission.** Fill it in as you go.
 
@@ -39,9 +39,15 @@
 
 ## What This Does
 
-<!-- Three or four sentences: what a user asks for, and what they get back. -->
-
-
+FitFindr is a command-line thrift-shopping agent. You type what you want in
+plain words, like `'vintage graphic tee under $30, size M'`, and it pulls out
+the item, the size, and the price ceiling, then searches 40 secondhand
+listings from Depop, thredUp, and Poshmark for the best match. When something
+matches, you get the listing it picked (title, price, platform), one or two
+outfits that pair it with pieces from your wardrobe, and a short caption you
+could post about the find. When nothing matches, it stops before calling the
+model and tells you what to change: the item words, the size, or the max
+price.
 
 ---
 
@@ -102,8 +108,9 @@
     `name`, `category`, `colors` (list), `style_tags` (list), and `notes`
     (str or None).
 - **Returns:** a non-empty `str` with 1–2 outfit suggestions in plain text.
-  When the wardrobe has items, each outfit names the pieces exactly as they're
-  written in their `name` field.
+  When the wardrobe has items, the prompt asks for outfits that name the pieces
+  exactly as they're written in their `name` field. The model sometimes
+  changes the capitalization.
 - **When it has nothing:**
   - Empty wardrobe (`items` is `[]` or missing): returns general styling
     advice for the item. Still a non-empty string, and it never claims the
@@ -122,10 +129,16 @@
   - `new_item` (dict): the same listing dict that went into `suggest_outfit`.
 - **Returns:** a `str` caption with 2–4 casual sentences, then 1–3 hashtags on
   the last line.
-  - It mentions the item, its price (written like `$24`), and its platform
-    once each.
-  - It leaves the brand out when the listing has none.
-  - Wording changes from run to run (`TEMPERATURE` is 0.9).
+  - The prompt asks it to mention the item, its price (written like `$24`),
+    and its platform once each. Nothing in the code enforces that: the
+    Sample Run below has a card that spells the price out as "eighteen
+    dollars".
+  - The prompt also asks for the buyer's voice, opening with the vibe or the
+    outfit rather than the price or the platform.
+  - The code leaves the brand out of the prompt when the listing has none.
+  - Wording changes from run to run (`TEMPERATURE` is 0.9) when the cache is
+    off (`AI201_CACHE=0`). With the cache on, the same prompt returns the
+    saved caption.
 - **When it has nothing:**
   - Empty or whitespace-only `outfit`: returns
     `"Can't write a fit card without an outfit suggestion."`
@@ -164,8 +177,8 @@ unit 4.
 
 **Where it lives:** `agent.py::run_agent`. It's a `while` loop over named
 steps (search → suggest → card → done), and every pass calls
-`trace.check_iterations(count)`, so a runaway loop stops at
-`MAX_ITERATIONS` (10).
+`trace.check_iterations(count)`, so a runaway loop raises an error once it
+passes `MAX_ITERATIONS` (10) instead of running forever.
 
 **How the query is parsed:** Regex, in `agent.py::parse_query`.
 - A price phrase becomes `max_price`: `under $30`, `below 30`,
@@ -202,8 +215,21 @@ run stops early.
 **One full query**
 
 ```
-$ python app.py ask '...'
+$ python app.py ask 'vintage graphic tee under $30, size M'
 
+  Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+
+  Outfit:   Outfit 1: Streetwear Contrast
+Pair the Y2K Baby Tee — Butterfly Print with baggy straight-leg jeans, dark wash to balance the fitted top. Throw the black cropped zip hoodie on top and finish the look with chunky white sneakers.
+
+Outfit 2: Casual Grunge
+Wear the Y2K Baby Tee — Butterfly Print tucked into wide-leg khaki trousers, accented by the brown leather belt. Layer the vintage black denim jacket over it and anchor the outfit with black combat boots.
+
+  Fit card: Total soft grunge fairy vibes with this little butterfly tee. Got it on depop for eighteen dollars and I am so obsessed with the pastel print. Going to wear it with baggy denim and beat up sneakers all week.
+
+#y2k #thrifthaul #babytee
+
+2 model calls this session, 710 prompt + 156 output tokens
 ```
 
 **The three tools, tested one at a time**
@@ -261,15 +287,34 @@ Can't write a fit card without an outfit suggestion.
 
 **Moment 1**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* Fixing bugs in my helpers for the listing search. Before
+  building `search_listings`, I had Claude check the size and keyword helpers
+  I'd written after the lecture (`_size_tokens`, `_size_matches`, `_keywords`).
+- *What came back:* Instead of just reading them, it ran them against the real
+  sizes in `data/listings.json`. `_size_matches('8', 'US 8')` returned `False`:
+  every shoe is listed as `US 8`, `US 8.5`, and so on, so the starter's own
+  example `'platform sneakers size 8'` would have found nothing. `'W30'` didn't
+  match `'W30 L30'` either, and `_keywords()` kept `30` and `size` from "under
+  $30, size M".
+- *What I changed:* I had it patch `_size_tokens` to strip a leading `US ` and
+  split `W30 L30` into `W30` and `L30`, keeping the rule that `L` never matches
+  `XL`. I also chose a regex parser that cuts the price and size phrases out of
+  the query before keyword scoring. The search check now confirms
+  `'platform sneakers'` in size 8 finds lst_019.
 
 **Moment 2**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* An idea about the data that we are working with. Analysing the data to write more informed criteria. 
+- *What came back:* My draft claimed that a phrasing my search doesn't read
+  ("t-shirt" for "tee", or a size without the word "size") "finds nothing".
+  When Claude reviewed my version, it checked that claim against the data, and
+  it was wrong: "t-shirt" still matches three shirts through the word "shirt",
+  and a size without "size" is simply ignored. The real way a matching query
+  comes back empty is a size written differently from the data:
+  `'jeans size 30'` keeps only the One Size listings and drops both W30 jeans.
+- *What I changed:* I replaced that sentence with the "size 30" vs "W30"
+  example. Since then I check every
+  claim in a reason against the real data before committing it.
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 

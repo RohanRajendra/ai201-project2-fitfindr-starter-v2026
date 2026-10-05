@@ -69,7 +69,7 @@ _PRICE_PATTERNS = [
 _SIZE_PATTERN = re.compile(
     r"\b(?:in\s+)?(?:size|sz)\b\.?\s*[:=]?\s*"
     r"(us\s*\d+(?:\.\d)?|\d+(?:\.\d)?|w\d+(?:\s*l\d+)?|one[\s-]?size|"
-    r"(?:extra|x)[\s-]?(?:small|large)|small|medium|large|"
+    r"(?:extra|x)[\s-]?(?:small|large)|small|medium|med|large|"
     r"[sml]/(?:[sml]|xl)|x{0,2}[sl]|m)\b",
     re.I,
 )

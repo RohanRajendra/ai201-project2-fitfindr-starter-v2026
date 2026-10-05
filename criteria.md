@@ -47,7 +47,7 @@ Given a query that matches no listings, the agent stops before calling
 query like "designer ballgown size XXS under $5" comes back `[]` on every try,
 and the `if` in `run_agent` stops before `suggest_outfit` is ever called. The
 message is built by code from the data as well (which part of the query found
-nothing, the cheapest matching price, or the sizes that exist), so the same
+nothing, the closest match and its price, or the sizes that exist), so the same
 query gets the same message every time. Nothing random sits on this path, so
 5 of 5 is the honest target: a single miss would be a bug in my code.
 
