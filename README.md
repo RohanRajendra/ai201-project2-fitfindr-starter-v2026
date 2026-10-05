@@ -316,6 +316,62 @@ Can't write a fit card without an outfit suggestion.
   example. Since then I check every
   claim in a reason against the real data before committing it.
 
+---
+
+## Stretch Features
+
+Declared here **before any of them is built**. Each one gets its own commit
+after this one, and this section will then say what it changed and show a run
+where it happened.
+
+### 1. Fourth tool: `compare_price`
+
+- **What it does:** Compares the picked item's price with the median price of
+  the other listings in the same category.
+- **Input:** `item` (dict): one listing dict.
+- **Returns:** a `dict` with these keys:
+  - `price` (float)
+  - `typical_price` (float): the category median
+  - `verdict` (str): `"below typical"` when the price is at least 15% under
+    the median, `"above typical"` when it's at least 15% over, and
+    `"about typical"` otherwise
+  - `compared_with` (int): how many listings the median came from
+- **When it has nothing:** an empty item, or a category with no other
+  listings, returns `verdict: "no comparison"` and `typical_price: None`.
+- **In the loop:** it's called right after an item is picked. The result goes
+  in `session["price_check"]`, and the output prints it, for example "Price
+  check: $18, below the typical $22 for tops".
+- **Status:** declared, not built yet.
+
+### 2. Second branch: switch away from an overpriced pick
+
+- **Condition:** `compare_price` says the picked item is `"above typical"`, and
+  the search results hold a cheaper close match that isn't above typical. A
+  close match has the same category and the same item word at the end of its
+  title, for example two blazers or two pairs of jeans.
+- **Path:**
+  - If there's a close match, the loop switches `session["selected_item"]` to
+    it, keeps the item it passed over in `session["passed_over"]`, and the
+    output says why.
+  - If there isn't, it keeps the original pick, and the price check shows it as
+    above typical.
+- **Where it lives:** `agent.py::run_agent`.
+- **Status:** declared, not built yet. On the real data I expect
+  `'velvet blazer'` to switch from the $52 Velvet Blazer to the $38 Vintage
+  Linen Blazer, and none of the example queries to switch.
+
+### 3. Style memory: `--remember`
+
+- **What it does:** `python app.py ask '...' --remember` runs with a saved
+  wardrobe instead of the example one.
+  - The saved wardrobe starts empty.
+  - After each completed run, the found item is added to it, so the next run's
+    outfit can use pieces earlier runs found.
+  - `python app.py forget` clears it.
+- **Where it's stored:** a gitignored file, `.fitfindr/wardrobe.json`. Runs
+  without `--remember`, and `run_eval.py`, never read or change it.
+- **Status:** declared, not built yet.
+
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 
      Don't fill these in during unit 3.
