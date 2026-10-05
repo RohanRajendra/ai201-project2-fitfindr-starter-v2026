@@ -13,8 +13,8 @@
 > python app.py ask 'vintage graphic tee under $30'
 > ```
 >
-> All three tools are stubs, so that last command will do nothing useful yet.
-> That's the starting position.
+> All three tools and the planning loop are built, so that last command runs
+> the whole agent.
 >
 > **The rest of this file is your submission.** Fill it in as you go.
 
@@ -39,9 +39,15 @@
 
 ## What This Does
 
-<!-- Three or four sentences: what a user asks for, and what they get back. -->
-
-
+FitFindr is a command-line thrift-shopping agent. You type what you want in
+plain words, like `'vintage graphic tee under $30, size M'`, and it pulls out
+the item, the size, and the price ceiling, then searches 40 secondhand
+listings from Depop, thredUp, and Poshmark for the best match. When something
+matches, you get the listing it picked (title, price, platform), one or two
+outfits that pair it with pieces from your wardrobe, and a short caption you
+could post about the find. When nothing matches, it stops before calling the
+model and tells you what to change: the item words, the size, or the max
+price.
 
 ---
 
@@ -59,24 +65,91 @@
 
 ### `search_listings`
 
-- **What it does:**
-- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" -->
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Filters the 40 listings in `data/listings.json` by price
+  ceiling and size, then ranks what's left by how many of the description's
+  keywords each one contains.
+- **Inputs:**
+  - `description` (str): the item words, e.g. `"vintage graphic tee"`.
+  - `size` (str or None): e.g. `"M"`, `"8"`, `"W30"`. `None` skips size
+    filtering.
+  - `max_price` (float or None): inclusive ceiling in dollars, so a $30.00
+    listing passes `max_price=30.0`. `None` skips price filtering.
+- **Returns:** a `list[dict]` of at most 10 listings
+  (`config.SEARCH_RESULT_LIMIT`), best match first. Each dict is one whole
+  listing with these fields:
+  - `id` (str), `title` (str), `description` (str), `category` (str)
+  - `style_tags` (list of str), `colors` (list of str)
+  - `size` (str), `condition` (str), `price` (float)
+  - `brand` (str or None), `platform` (str)
+  - *How sizes match:* a listing's size is split on `/` into whole tokens and
+    compared token by token, ignoring case. Notes in parentheses are ignored.
+    - `M` matches `S/M` and `M/L`, but `L` does **not** match `XL`.
+    - `8` matches `US 8` but not `US 8.5`.
+    - `W30` matches `W30 L30`.
+    - `small`, `medium`, `large`, and `extra large` count as `S`, `M`, `L`,
+      and `XL`.
+    - A `One Size` listing matches any size.
+  - *How results are ranked:* each listing scores one point per description
+    keyword found in its title, description, category, style tags, colors,
+    or brand. Keywords in the title count twice. Common words like "a" and
+    "for" are dropped, and a trailing "s" is ignored, so `tees` matches
+    `tee`. Ties go to the cheaper listing.
+- **When it has nothing:** an empty list `[]`, never `None` and never an
+  exception. Listings that score 0 are dropped, so an empty or all-filler
+  `description` also returns `[]`.
 
 ### `suggest_outfit`
 
-- **What it does:**
+- **What it does:** Asks the model for one or two outfits built around the new
+  item, using pieces from the user's wardrobe.
 - **Inputs:**
-- **Returns:**
+  - `new_item` (dict): one listing dict from `search_listings`.
+  - `wardrobe` (dict): `{"items": [...]}`. Each item is a dict with `id`,
+    `name`, `category`, `colors` (list), `style_tags` (list), and `notes`
+    (str or None).
+- **Returns:** a non-empty `str` with 1–2 outfit suggestions in plain text.
+  When the wardrobe has items, the prompt asks for outfits that name the pieces
+  exactly as they're written in their `name` field. The model sometimes
+  changes the capitalization.
 - **When it has nothing:**
+  - Empty wardrobe (`items` is `[]` or missing): returns general styling
+    advice for the item. Still a non-empty string, and it never claims the
+    user owns anything.
+  - Empty `new_item`: returns `"No item to style — search for something first."`
+    without calling the model.
+  - Model sends back empty text: returns a one-line message saying so instead
+    of `""`.
 
 ### `create_fit_card`
 
-- **What it does:**
+- **What it does:** Asks the model for a short caption about the find, written
+  like a real social post.
 - **Inputs:**
-- **Returns:**
+  - `outfit` (str): the outfit text `suggest_outfit` returned.
+  - `new_item` (dict): the same listing dict that went into `suggest_outfit`.
+- **Returns:** a `str` caption with 2–4 casual sentences, then 1–3 hashtags on
+  the last line.
+  - The prompt asks it to mention the item, its price (written like `$24`),
+    and its platform once each. Nothing in the code enforces that: the
+    Sample Run below has a card that spells the price out as "eighteen
+    dollars".
+  - The prompt also asks for the buyer's voice, opening with the vibe or the
+    outfit rather than the price or the platform.
+  - The code leaves the brand out of the prompt when the listing has none.
+  - Wording changes from run to run (`TEMPERATURE` is 0.9) when the cache is
+    off (`AI201_CACHE=0`). With the cache on, the same prompt returns the
+    saved caption.
 - **When it has nothing:**
+  - Empty or whitespace-only `outfit`: returns
+    `"Can't write a fit card without an outfit suggestion."`
+  - Empty `new_item`: returns `"Can't write a fit card without an item."`
+  - Neither case calls the model.
+  - Model sends back empty text: returns a one-line message saying so instead
+    of `""`.
+
+Both model tools go through `generate()`. If the model can't be reached at
+all, that raises `ModelUnavailable`, which the loop doesn't catch yet. That's
+unit 4.
 
 ---
 
@@ -94,12 +167,41 @@
      function have to be real. -->
 
 **Branch rule:**
+- If `search_listings` returns an empty list, the loop puts a message in
+  `session["error"]` naming what to change (the item words, the size, or the
+  max price) and stops. `suggest_outfit` is never called, and `fit_card`
+  stays `None`.
+- Otherwise it takes the first (best-scoring) result as
+  `session["selected_item"]` and goes to `suggest_outfit`, then
+  `create_fit_card`.
 
-**Where it lives:** `agent.py::run_agent`
+**Where it lives:** `agent.py::run_agent`. It's a `while` loop over named
+steps (search → suggest → card → done), and every pass calls
+`trace.check_iterations(count)`, so a runaway loop raises an error once it
+passes `MAX_ITERATIONS` (10) instead of running forever.
 
-**How the query is parsed:** <!-- regex, string splitting, or asking the model — say which -->
+**How the query is parsed:** Regex, in `agent.py::parse_query`.
+- A price phrase becomes `max_price`: `under $30`, `below 30`,
+  `less than $30`, `up to $30`, `max $30`, a bare `$30`, or `30 dollars`.
+- A size phrase becomes `size`: `size M`, `in size M`, `sz 8`.
+- Leading filler like "looking for a" is dropped.
+- Whatever is left becomes `description`.
+- A size is only read after the word "size" or "sz". So "medium wash jeans"
+  stays a description and doesn't become size M.
 
-**What moves through the session:** <!-- which fields, in what order -->
+**What moves through the session:** Each tool reads its inputs back out of the
+session, not from a local variable. The fields fill in this order:
+1. `query`
+2. `parsed` (`description`, `size`, `max_price`)
+3. `search_results`
+4. `selected_item` (which is `search_results[0]`)
+5. `outfit_suggestion`
+6. `fit_card`
+
+`steps` lists each tool call in order:
+`["search_listings", "suggest_outfit", "create_fit_card"]` on a full run, and
+`["search_listings"]` when the branch stops it. `error` is set only when the
+run stops early.
 
 ---
 
@@ -113,25 +215,63 @@
 **One full query**
 
 ```
-$ python app.py ask '...'
+$ python app.py ask 'vintage graphic tee under $30, size M'
 
+  Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+
+  Outfit:   Outfit 1: Streetwear Contrast
+Pair the Y2K Baby Tee — Butterfly Print with baggy straight-leg jeans, dark wash to balance the fitted top. Throw the black cropped zip hoodie on top and finish the look with chunky white sneakers.
+
+Outfit 2: Casual Grunge
+Wear the Y2K Baby Tee — Butterfly Print tucked into wide-leg khaki trousers, accented by the brown leather belt. Layer the vintage black denim jacket over it and anchor the outfit with black combat boots.
+
+  Fit card: Total soft grunge fairy vibes with this little butterfly tee. Got it on depop for eighteen dollars and I am so obsessed with the pastel print. Going to wear it with baggy denim and beat up sneakers all week.
+
+#y2k #thrifthaul #babytee
+
+2 model calls this session, 710 prompt + 156 output tokens
 ```
 
 **The three tools, tested one at a time**
 
-```
-$ python -c "from tools import search_listings; print(search_listings('graphic tee', max_price=30))"
+`search_listings`: a match, then the empty case
 
 ```
+$ python -c "from tools import search_listings; print([(x['id'], x['title'], x['price'], x['size']) for x in search_listings('graphic tee', max_price=30)])"
+[('lst_006', 'Graphic Tee — 2003 Tour Bootleg Style', 24.0, 'L'), ('lst_002', 'Y2K Baby Tee — Butterfly Print', 18.0, 'S/M'), ('lst_033', 'Vintage Band Tee — Faded Grey', 19.0, 'L'), ('lst_017', 'Mesh Long-Sleeve Top — Black', 15.0, 'S/M'), ('lst_015', 'Vintage Graphic Hoodie — Faded Black', 26.0, 'L'), ('lst_012', 'Oversized Crewneck Sweatshirt — Vintage Navy', 20.0, 'XL (fits oversized)'), ('lst_011', 'Low-Rise Cargo Pants — Khaki', 27.0, 'W29')]
+
+$ python -c "from tools import search_listings; print(search_listings('designer ballgown', size='XXS', max_price=5))"
+[]
+```
+
+`suggest_outfit`: the example wardrobe, then an empty one
 
 ```
-$ python -c "from tools import suggest_outfit; ..."
+$ python -c "from tools import suggest_outfit; from utils.data_loader import get_example_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_example_wardrobe()))"
+Outfit 1: Casual Streetwear
+Pair the Vintage Levi's 501 Jeans with the White ribbed tank top tucked in, layered under the Oversized grey crewneck sweatshirt. Finish the look with the Chunky white sneakers and the Black crossbody bag. This effortless combination plays with proportions while keeping the classic denim front and center.
 
+Outfit 2: Edge & Denim
+Style the Vintage Levi's 501 Jeans with the Black cropped zip hoodie and the Vintage black denim jacket on top for a double-denim contrast. Ground the outfit with the Black combat boots and accessorize with the Black crossbody bag. It is a sharp, textured streetwear look that leans into the vintage nature of the jeans.
+
+$ python -c "from tools import suggest_outfit; from utils.data_loader import get_empty_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_empty_wardrobe()))"
+Outfit 1: Pair these with a cropped white ribbed tank top, an oversized black leather biker jacket, and retro low-top sneakers like Adidas Sambas for an effortless streetwear look. 
+
+Outfit 2: Style them tucked into knee-high brown leather boots, topped with a chunky cream cable-knit crewneck sweater and a tortoiseshell belt for a classic, cozy aesthetic. 
+
+Thrifting tip: Wash vintage denim inside out in cold water and hang to dry to preserve the indigo dye and prevent further shrinking.
 ```
 
-```
-$ python -c "from tools import create_fit_card; ..."
+`create_fit_card`: a real card, then a blank outfit
 
+```
+$ python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('jeans and white sneakers', load_listings()[0]))"
+nothing beats broken-in denim and fresh white sneakers for that effortless skater-off-duty look. scored these vintage levi's 501s on depop for $38 and they fit like an absolute dream. finally found the perfect medium wash pair.
+
+#levis #streetwear #thrifted
+
+$ python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('   ', load_listings()[0]))"
+Can't write a fit card without an outfit suggestion.
 ```
 
 ---
@@ -147,15 +287,34 @@ $ python -c "from tools import create_fit_card; ..."
 
 **Moment 1**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* Fixing bugs in my helpers for the listing search. Before
+  building `search_listings`, I had Claude check the size and keyword helpers
+  I'd written after the lecture (`_size_tokens`, `_size_matches`, `_keywords`).
+- *What came back:* Instead of just reading them, it ran them against the real
+  sizes in `data/listings.json`. `_size_matches('8', 'US 8')` returned `False`:
+  every shoe is listed as `US 8`, `US 8.5`, and so on, so the starter's own
+  example `'platform sneakers size 8'` would have found nothing. `'W30'` didn't
+  match `'W30 L30'` either, and `_keywords()` kept `30` and `size` from "under
+  $30, size M".
+- *What I changed:* I had it patch `_size_tokens` to strip a leading `US ` and
+  split `W30 L30` into `W30` and `L30`, keeping the rule that `L` never matches
+  `XL`. I also chose a regex parser that cuts the price and size phrases out of
+  the query before keyword scoring. The search check now confirms
+  `'platform sneakers'` in size 8 finds lst_019.
 
 **Moment 2**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* An idea about the data that we are working with. Analysing the data to write more informed criteria. 
+- *What came back:* My draft claimed that a phrasing my search doesn't read
+  ("t-shirt" for "tee", or a size without the word "size") "finds nothing".
+  When Claude reviewed my version, it checked that claim against the data, and
+  it was wrong: "t-shirt" still matches three shirts through the word "shirt",
+  and a size without "size" is simply ignored. The real way a matching query
+  comes back empty is a size written differently from the data:
+  `'jeans size 30'` keeps only the One Size listings and drops both W30 jeans.
+- *What I changed:* I replaced that sentence with the "size 30" vs "W30"
+  example. Since then I check every
+  claim in a reason against the real data before committing it.
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 
