@@ -10,8 +10,8 @@ can't tell which layer is lying to you.
     suggest_outfit(new_item, wardrobe)             → str
     create_fit_card(outfit, new_item)              → str
 
-All three are stubs right now. They run and they do nothing — that's the
-starting position and it's deliberate.
+All three are built, and each was tested on its own from a terminal before
+the loop existed.
 
 ⚠️ Before you write any of them, fill in the **Tool Inventory** section of your
 README (Milestone 2). Four lines per tool: what it does, each input with its
@@ -20,7 +20,7 @@ That last line is what your loop branches on. "Returns a list" earns nothing —
 the description has to say what is *in* the list.
 """
 
-import config  # noqa: F401 — you'll use this in search_listings
+import config
 from generate import generate
 from utils.data_loader import load_listings
 import re
@@ -53,7 +53,11 @@ def _size_tokens(size: str) -> set[str]:
     for p in re.split(r"[/,|]", cleaned):
         p = re.sub(r"\s+", " ", p).strip()
         p = re.sub(r"^SIZE\s+", "", p)
-        if p:
+        p = re.sub(r"^US\s*(?=\d)", "", p)  # "US 8" -> "8", so "size 8" finds shoes
+        waist_length = re.fullmatch(r"(W\d+)\s*(L\d+)", p)  # "W30 L30" -> W30, L30
+        if waist_length:
+            tokens.update(waist_length.groups())
+        elif p:
             tokens.add(_SIZE_ALIASES.get(p, p))
     return tokens
 
@@ -64,6 +68,28 @@ def _size_matches(wanted: str, listing_size: str) -> bool:
     if any(token.startswith("ONE SIZE") for token in listing_tokens):
         return True
     return bool(_size_tokens(wanted) & listing_tokens)
+
+def _stem(word: str) -> str:
+    """Fold plurals and apostrophes, so "tees" meets "tee" and "levi's" meets "levis"."""
+    word = word.replace("'", "")
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
+    return word
+
+def _stems(text: str) -> set[str]:
+    return {_stem(w) for w in _keywords(text)}
+
+def _score(wanted: set[str], listing: dict) -> int:
+    """One point per wanted word found anywhere in the listing; title hits count twice."""
+    title = _stems(listing["title"])
+    everything = title | _stems(" ".join([
+        listing["description"],
+        listing["category"],
+        " ".join(listing["style_tags"]),
+        " ".join(listing["colors"]),
+        listing["brand"] or "",  # brand is None for most listings
+    ]))
+    return len(wanted & everything) + len(wanted & title)
 
 def search_listings(
     description: str,
@@ -81,15 +107,10 @@ def search_listings(
         description: keywords describing what the user wants
                      (e.g. "vintage graphic tee").
         size:        a size string to filter by, or None to skip size filtering.
-                     Match case-insensitively — "M" should match "S/M".
-
-                     ⚠️ Read the sizes in the data before you reach for a plain
-                     substring test. `"s" in "us 9"` is True, and so is
-                     `"l" in "xl"`. A filter that returns shoes when someone
-                     asked for a small top reads like a broken search, and it
-                     will quietly cost you in unit 4 when you test criterion 1.
-                     What counts as a size match is part of your spec — decide
-                     it and write it into your Tool Inventory.
+                     Sizes match as whole tokens, ignoring case: "M" matches
+                     "S/M", "8" matches "US 8", "W30" matches "W30 L30", and
+                     "L" never matches "XL". A "One Size" listing matches any
+                     size.
         max_price:   maximum price, inclusive, or None to skip price filtering.
 
     Returns:
@@ -105,22 +126,64 @@ def search_listings(
     realistic — thrift listings often have no brand. If something you write
     assumes a brand is always there, you will find out in unit 4.
 
-    TODO:
-        1. Load every listing with load_listings().
-        2. Filter by max_price and by size, when each is provided.
-        3. Score what's left by keyword overlap with `description`.
-        4. Drop anything scoring zero.
-        5. Sort by score, highest first, and return the listing dicts —
-           at most config.SEARCH_RESULT_LIMIT of them.
+    Scoring: one point per description keyword found in the title,
+    description, category, style tags, colors or brand, with title hits
+    counted twice. Stopwords are dropped and plurals folded ("tees" -> "tee").
+    Ties go to the cheaper listing.
 
     Test it from a terminal before you move on:
         python -c "from tools import search_listings; print(search_listings('graphic tee', max_price=30))"
     """
-    # TODO: replace this with your implementation
-    return []
+    wanted = _stems(description)
+    if not wanted:
+        return []
+
+    scored = []
+    for listing in load_listings():
+        if max_price is not None and listing["price"] > max_price:
+            continue
+        if not _size_matches(size, listing["size"]):
+            continue
+        score = _score(wanted, listing)
+        if score > 0:
+            scored.append((score, listing))
+
+    scored.sort(key=lambda pair: (-pair[0], pair[1]["price"]))
+    return [listing for _, listing in scored[: config.SEARCH_RESULT_LIMIT]]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
+
+_STYLIST = (
+    "You are a practical thrift stylist. You build outfits around one "
+    "secondhand piece. Be specific and brief. Plain text, no markdown."
+)
+
+def _describe(item: dict) -> str:
+    """One line about a listing for a prompt. Brand is left out when there isn't one."""
+    parts = [
+        item.get("title", "an item"),
+        f"brand: {item['brand']}" if item.get("brand") else "",
+        f"category: {item.get('category', '')}",
+        f"colors: {', '.join(item.get('colors', []))}",
+        f"style: {', '.join(item.get('style_tags', []))}",
+        f"size: {item.get('size', '')}",
+        f"condition: {item.get('condition', '')}",
+    ]
+    return "; ".join(p for p in parts if p)
+
+def _wardrobe_lines(items: list[dict]) -> str:
+    lines = []
+    for piece in items:
+        line = (
+            f"- {piece['name']} ({piece.get('category', '')}; "
+            f"colors: {', '.join(piece.get('colors', []))}; "
+            f"style: {', '.join(piece.get('style_tags', []))})"
+        )
+        if piece.get("notes"):  # notes is None for half the example wardrobe
+            line += f" — {piece['notes']}"
+        lines.append(line)
+    return "\n".join(lines)
 
 def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
     """
@@ -140,21 +203,55 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
         raising or returning "". Unit 4 has you trigger the empty wardrobe on
         purpose, so decide now what it should do.
 
-    TODO:
-        1. Check whether wardrobe['items'] is empty.
-        2. If it is, ask the model for general styling ideas for this item.
-        3. If it isn't, format the wardrobe items into the prompt and ask for
-           specific combinations naming pieces the user already owns.
-        4. Return the model's response.
+    With wardrobe items, the prompt lists each piece and asks for outfits that
+    name pieces exactly as written. With none, it asks for general advice that
+    doesn't claim the user owns anything. None of the empty cases raise:
+        empty new_item -> "No item to style — search for something first."
+                          (no model call)
+        empty wardrobe -> general styling advice
+        empty reply    -> a one-line message saying so
 
     Test it from a terminal before you move on:
         python -c "from tools import suggest_outfit; from utils.data_loader import get_example_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_example_wardrobe()))"
     """
-    # TODO: replace this with your implementation
-    return ""
+    if not new_item:
+        return "No item to style — search for something first."
+
+    items = (wardrobe or {}).get("items") or []
+    if items:
+        prompt = (
+            f"New thrift find: {_describe(new_item)}\n\n"
+            f"Pieces I already own:\n{_wardrobe_lines(items)}\n\n"
+            "Suggest 1-2 outfits built around the new find, using only pieces "
+            "from my list. Name each piece exactly as it's written in the list. "
+            "Two or three sentences per outfit."
+        )
+    else:
+        prompt = (
+            f"New thrift find: {_describe(new_item)}\n\n"
+            "I haven't saved any wardrobe pieces yet. Give general styling "
+            "advice: 1-2 outfit ideas naming the kinds of pieces this goes with "
+            "(e.g. 'straight-leg dark jeans'), plus one tip. Don't say I own "
+            "anything. Under 120 words."
+        )
+
+    outfit = generate(prompt, system=_STYLIST)
+    if not outfit:
+        return f"The model returned no outfit suggestion for {new_item.get('title', 'this item')}. Try again."
+    return outfit
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
+
+_CAPTION_WRITER = (
+    "You write short, casual captions for thrift finds, the way someone posts "
+    "their own outfit. Specific about the vibe, never salesy. Plain text, no "
+    "markdown."
+)
+
+def _price(amount: float) -> str:
+    """How a person writes a price: $24 for 24.0, $18.50 for 18.5."""
+    return f"${amount:.0f}" if float(amount).is_integer() else f"${amount:.2f}"
 
 def create_fit_card(outfit: str, new_item: dict) -> str:
     """
@@ -167,9 +264,11 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
         new_item: the listing dict for the item.
 
     Returns:
-        A two-to-four sentence caption.
-        If `outfit` is empty or whitespace, return a descriptive message rather
-        than raising.
+        A caption: two to four casual sentences, then 1-3 hashtags on the
+        last line. None of the empty cases raise or call the model:
+            blank outfit   -> "Can't write a fit card without an outfit suggestion."
+            empty new_item -> "Can't write a fit card without an item."
+        An empty reply from the model comes back as a one-line message.
 
     The caption should read like a real post rather than a product description,
     mention the item and its price and platform once each, and be specific about
@@ -182,13 +281,34 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
         • CACHE_ENABLED — the adapter handed back an answer it already had
         • TEMPERATURE   — at 0.0 the model gives the same words every time
 
-    TODO:
-        1. Guard against an empty or whitespace-only `outfit`.
-        2. Build a prompt with the item details and the outfit.
-        3. Call generate() and return the response.
-
     Test it from a terminal before you move on:
         python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('jeans and white sneakers', load_listings()[0]))"
     """
-    # TODO: replace this with your implementation
-    return ""
+    if not outfit or not outfit.strip():
+        return "Can't write a fit card without an outfit suggestion."
+    if not new_item:
+        return "Can't write a fit card without an item."
+
+    price = _price(new_item["price"])
+    platform = new_item["platform"]
+    # Say who bought it: with a bare "Platform: depop" line the model sometimes
+    # wrote the caption as the seller ("grab these on my depop"). And keep the
+    # facts out of the first sentence, or every card opens "scored these on
+    # depop for $38".
+    prompt = (
+        f"My thrift find: {_describe(new_item)}\n"
+        f"I just bought this on {platform} for {price}.\n\n"
+        f"How I'm styling it:\n{outfit.strip()}\n\n"
+        "Write a caption for my post about this find. I'm the buyer showing it "
+        "off, not the seller. 2-4 casual sentences in first person, then 1-3 "
+        "hashtags on their own final line. Open with the vibe or the outfit, "
+        f"not the price or where I got it. Mention the item, the price ({price}) "
+        f"and the platform ({platform}) exactly once each, and don't use the "
+        "platform as a hashtag. Name a specific vibe instead of generic words "
+        "like 'stylish'. Emoji are fine. Don't wrap the caption in quotes."
+    )
+
+    card = generate(prompt, system=_CAPTION_WRITER)
+    if not card:
+        return f"The model returned no caption for {new_item.get('title', 'this item')}. Try again."
+    return card
