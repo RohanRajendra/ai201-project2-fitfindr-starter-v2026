@@ -110,7 +110,9 @@ price.
 - **Returns:** a non-empty `str` with 1–2 outfit suggestions in plain text.
   When the wardrobe has items, the prompt asks for outfits that name the pieces
   exactly as they're written in their `name` field. The model sometimes
-  changes the capitalization.
+  changes the capitalization. A wardrobe piece with the same name as
+  `new_item` is skipped, so a find saved by `--remember` isn't treated as
+  something you already own when it comes up again.
 - **When it has nothing:**
   - Empty wardrobe (`items` is `[]` or missing): returns general styling
     advice for the item. Still a non-empty string, and it never claims the
@@ -172,11 +174,15 @@ unit 4.
   max price) and stops. `suggest_outfit` is never called, and `fit_card`
   stays `None`.
 - Otherwise it takes the first (best-scoring) result as
-  `session["selected_item"]` and goes to `suggest_outfit`, then
-  `create_fit_card`.
+  `session["selected_item"]` and checks its price with `compare_price`.
+- **Second branch (stretch):** if that pick is above typical and the search
+  results hold a cheaper close match (same category, same item word in the
+  title, not above typical itself), the loop switches to it, keeps the
+  original in `session["passed_over"]`, and checks the new pick's price.
+  Otherwise it goes on to `suggest_outfit`, then `create_fit_card`.
 
 **Where it lives:** `agent.py::run_agent`. It's a `while` loop over named
-steps (search → suggest → card → done), and every pass calls
+steps (search → price → suggest → card → done), and every pass calls
 `trace.check_iterations(count)`, so a runaway loop raises an error once it
 passes `MAX_ITERATIONS` (10) instead of running forever.
 
@@ -194,12 +200,17 @@ session, not from a local variable. The fields fill in this order:
 1. `query`
 2. `parsed` (`description`, `size`, `max_price`)
 3. `search_results`
-4. `selected_item` (which is `search_results[0]`)
-5. `outfit_suggestion`
-6. `fit_card`
+4. `selected_item` (`search_results[0]`, unless the second branch switches
+   to a cheaper close match)
+5. `price_check` (what `compare_price` said; stretch tool, see below)
+6. `passed_over` (only set when the second branch switched)
+7. `outfit_suggestion`
+8. `fit_card`
 
-`steps` lists each tool call in order:
-`["search_listings", "suggest_outfit", "create_fit_card"]` on a full run, and
+`steps` lists the tool each loop step called, in order:
+`["search_listings", "compare_price", "suggest_outfit", "create_fit_card"]` on
+a full run, with `compare_price` twice when the second branch switched (the old
+pick, then the new one), and
 `["search_listings"]` when the branch stops it. `error` is set only when the
 run stops early.
 
@@ -213,6 +224,9 @@ run stops early.
      2. Your three per-tool terminal tests — the command and what it printed. -->
 
 **One full query**
+
+Recorded before the stretch features. The same query now also prints a
+`Price:` line, shown under Stretch Features below.
 
 ```
 $ python app.py ask 'vintage graphic tee under $30, size M'
@@ -315,6 +329,194 @@ Can't write a fit card without an outfit suggestion.
 - *What I changed:* I replaced that sentence with the "size 30" vs "W30"
   example. Since then I check every
   claim in a reason against the real data before committing it.
+
+---
+
+## Stretch Features
+
+Declared here **before any of them is built**. Each one gets its own commit
+after this one, and this section will then say what it changed and show a run
+where it happened.
+
+### 1. Fourth tool: `compare_price`
+
+- **What it does:** Compares the picked item's price with the median price of
+  the other listings in the same category.
+- **Input:** `item` (dict): one listing dict.
+- **Returns:** a `dict` with these keys:
+  - `price` (float, or None when the item had no usable price)
+  - `typical_price` (float): the category median
+  - `verdict` (str): `"below typical"` when the price is at least 15% under
+    the median, `"above typical"` when it's at least 15% over, and
+    `"about typical"` otherwise
+  - `compared_with` (int): how many listings the median came from
+- **When it has nothing:** an empty item, an item without a numeric price, or
+  a category with no other listings returns `verdict: "no comparison"` and
+  `typical_price: None`.
+- **In the loop:** it's called right after an item is picked. The result goes
+  in `session["price_check"]`, and the output prints it as a `Price:` line.
+- **Status:** built.
+- **What it changed:**
+  - The loop has a new step between search and `suggest_outfit`.
+  - `steps` on a full run now lists four tools.
+  - The session has a `price_check` field.
+  - `app.py` and `agent.py` print a `Price:` line under `Found:`.
+  - The fit card doesn't use the result, so criterion 4 is untouched.
+- **The tool on its own:**
+
+  ```
+  $ python -c "from tools import compare_price; from utils.data_loader import load_listings; print(compare_price(load_listings()[1]))"
+  {'price': 18.0, 'typical_price': 21.5, 'verdict': 'below typical', 'compared_with': 14}
+  ```
+
+- **A run where the agent called it:**
+
+  ```
+  $ python app.py ask 'vintage graphic tee under $30, size M'
+    Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+    Price:    $18, below the typical $21.50 for tops
+  ...
+
+  $ python -c "from agent import run_agent; from utils.data_loader import get_example_wardrobe; s = run_agent('vintage graphic tee under \$30, size M', get_example_wardrobe()); print(s['steps']); print(s['price_check'])"
+  ['search_listings', 'compare_price', 'suggest_outfit', 'create_fit_card']
+  {'price': 18.0, 'typical_price': 21.5, 'verdict': 'below typical', 'compared_with': 14}
+  ```
+
+### 2. Second branch: switch away from an overpriced pick
+
+- **Condition:** `compare_price` says the picked item is `"above typical"`, and
+  the search results hold a cheaper close match that isn't above typical. A
+  close match has the same category and the same item word at the end of its
+  title, for example two blazers or two pairs of jeans.
+- **Path:**
+  - If there's a close match, the loop switches `session["selected_item"]` to
+    it, keeps the item it passed over in `session["passed_over"]`, and the
+    output says why.
+  - If there isn't, it keeps the original pick, and the price check shows it as
+    above typical.
+- **Where it lives:** `agent.py::run_agent`, in the `price` step.
+  `_better_deal` finds the close match.
+- **Status:** built.
+- **What it changed:**
+  - After a switch the loop goes round one more time, and `compare_price`
+    runs again for the new pick.
+  - The session has a `passed_over` field.
+  - The output adds a line saying what was passed over and why.
+  - It switches at most once per run.
+  - `_better_deal` also prices each candidate with `compare_price`, and those
+    checks aren't added to `steps`. A switched run makes three
+    `compare_price` calls but records two.
+  - **Known limit:** matching is loose (see Unit 4 notes), so a switch can
+    contradict a word you typed. For example, `'blue jeans'` switches to the
+    black jeans. If matching gets stricter in Unit 4, `'velvet blazer'`
+    stops switching (`'graphic tee'` still would), so this run log will need
+    re-capturing.
+  - None of the example queries switch, because their picks are below or
+    about typical. Overpriced picks with no close match, such as
+    `'graphic hoodie'` or `'leather bomber'`, are kept.
+- **A run where the branch was taken:**
+
+  ```
+  $ python app.py ask 'velvet blazer'
+
+    Found:    Vintage Linen Blazer — Cream — $38.0 on thredUp
+    Price:    $38, about the typical $42 for outerwear
+    Switched from Velvet Blazer — Emerald Green ($52, above the typical $40 for outerwear) to this cheaper close match.
+
+    Outfit:   Outfit 1: High-Low Contrast
+  Pair the vintage linen blazer with the white ribbed tank top tucked into the baggy straight-leg jeans, dark wash. Add the chunky white sneakers and the black crossbody bag for an effortless high-low mix of structured vintage and relaxed streetwear.
+
+  Outfit 2: Monochromatic Earth Tones
+  Layer the vintage linen blazer over the white ribbed tank top and wide-leg khaki trousers. Cinch the waist with the brown leather belt and finish with the chunky white sneakers for a polished, minimalist daytime look.
+
+    Fit card: Channelling the ultimate coastal grandma energy with this cream linen blazer. Scored it on thredUp for just $38 and the fabric is so crisp and breathable. It instantly pulls together any casual denim look or wide-leg pant moment. 
+
+  #vintagefinds #thrifthaul #minimaliststyle
+
+  0 model calls this session, 2 served from cache
+
+  $ python -c "from agent import run_agent; from utils.data_loader import get_example_wardrobe; s = run_agent('velvet blazer', get_example_wardrobe()); print(s['steps']); print('passed_over:', s['passed_over']['title'], s['passed_over']['price']); print('selected_item:', s['selected_item']['title'], s['selected_item']['price']); print('price_check:', s['price_check'])"
+  ['search_listings', 'compare_price', 'compare_price', 'suggest_outfit', 'create_fit_card']
+  passed_over: Velvet Blazer — Emerald Green 52.0
+  selected_item: Vintage Linen Blazer — Cream 38.0
+  price_check: {'price': 38.0, 'typical_price': 42.0, 'verdict': 'about typical', 'compared_with': 7}
+  ```
+
+### 3. Style memory: `--remember`
+
+- **What it does:** `python app.py ask '...' --remember` runs with a saved
+  wardrobe instead of the example one.
+  - The saved wardrobe starts empty.
+  - After each completed run, the found item is added to it, so the next run's
+    outfit can use pieces earlier runs found.
+  - `python app.py forget` clears it.
+- **Where it's stored:** a gitignored file, `.fitfindr/wardrobe.json`. Runs
+  without `--remember`, and `run_eval.py`, never read or change it.
+- **Status:** built.
+- **What it changed:**
+  - A new `memory.py` has `load_wardrobe`, `remember`, and `forget`.
+  - `app.py ask` takes `--remember`, which can't be combined with
+    `--empty-wardrobe`, and there's a new `app.py forget` command.
+  - After a completed `--remember` run, the selected item is saved as a
+    wardrobe piece. It has the same fields as the wardrobe schema, plus a
+    note saying where it was found and for how much.
+  - `run_agent`, `run_eval.py`, and `serve.py` are unchanged and never read
+    the file.
+  - `.gitignore` now lists `.fitfindr/`.
+  - A saved file that can't be read, or isn't shaped like a wardrobe, counts
+    as empty, and `forget` always deletes it. Saves go to a temp file first,
+    so a run that dies mid-write can't wipe earlier pieces.
+- **Two runs where the second is shaped by the first:**
+  - Run 1 starts from an empty memory, so its outfit is general advice. It
+    saves the Y2K Baby Tee.
+  - Run 2's outfits are built around the new denim jacket, and both of them
+    use that tee.
+  - This is a re-run of the same sequence after a wording fix, so both runs
+    are served from the cache. The first time, they made 2 real model calls
+    each and returned the same text.
+
+  ```
+  $ python app.py forget
+  Forgot 2 saved pieces.
+
+  $ python app.py ask 'vintage graphic tee under $30, size M' --remember
+  (running with your saved wardrobe: 0 pieces)
+
+    Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+    Price:    $18, below the typical $21.50 for tops
+
+    Outfit:   Outfit 1: Low-rise light-wash flare jeans and white platform sneakers for a classic Y2K pop star look.
+
+  Outfit 2: A pastel pink pleated tennis skirt and chunky strappy sandals to lean into the playful butterfly aesthetic.
+
+  Styling tip: Keep accessories minimal. Add a small pink shoulder bag and thin silver hoop earrings to let the graphic print stand out.
+
+    Fit card: Channeling total 2000s pop star energy in this little butterfly baby tee. Found it on depop for just 18 dollars and the print is so nostalgic. Pairing it with low rise flares and platforms for the ultimate bratz doll vibe. 🦋✨
+
+  #y2k #babytee #vintage
+
+    Remembered Y2K Baby Tee — Butterfly Print. Your saved wardrobe has 1 piece now.
+
+  0 model calls this session, 2 served from cache
+
+  $ python app.py ask 'denim jacket under $50' --remember
+  (running with your saved wardrobe: 1 piece)
+
+    Found:    Denim Jacket — Light Wash, Cropped — $42.0 on poshmark
+    Price:    $42, about the typical $40 for outerwear
+
+    Outfit:   Outfit One: Layer the Wrangler Denim Jacket over the Y2K Baby Tee — Butterfly Print for a nostalgic, double-vintage look. Add light wash low-rise jeans and chunky platform sneakers to complete the Y2K street style aesthetic.
+
+  Outfit Two: Wear the Y2K Baby Tee — Butterfly Print tucked into a pleated white tennis skirt, then throw the Wrangler Denim Jacket loosely over your shoulders. Finish with pastel sneakers and a beaded shoulder bag for a sweet, throwback daytime vibe.
+
+    Fit card: That early 2000s street style vibe is too good in this little cropped Wrangler jacket. Scored it on Poshmark for $42 and honestly haven't taken it off since it arrived. Tossed it over a baby tee with some chunky sneakers today and the fit is just immaculate. 
+
+  #y2kstyle #denimjacket #poshmarkfinds
+
+    Remembered Denim Jacket — Light Wash, Cropped. Your saved wardrobe has 2 pieces now.
+
+  0 model calls this session, 2 served from cache
+  ```
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 

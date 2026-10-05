@@ -17,7 +17,7 @@ import re
 
 import config
 import trace
-from tools import search_listings, suggest_outfit, create_fit_card, _price, _size_tokens
+from tools import search_listings, suggest_outfit, create_fit_card, compare_price, _price, _size_tokens, _stem
 from utils.data_loader import load_listings
 from generate import ModelUnavailable
 
@@ -43,6 +43,8 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "parsed": {},                # description / size / max_price you pulled out of it
         "search_results": [],        # everything search_listings returned
         "selected_item": None,       # the one you chose — goes into suggest_outfit
+        "price_check": None,         # what compare_price said about selected_item
+        "passed_over": None,         # an overpriced pick the second branch switched away from
         "wardrobe": wardrobe,        # the user's wardrobe
         "outfit_suggestion": None,   # what suggest_outfit returned
         "fit_card": None,            # what create_fit_card returned
@@ -182,6 +184,29 @@ def _no_results_message(parsed: dict) -> str:
 
     return f"No listings matched {asked}. " + " ".join(advice)
 
+
+def _title_noun(item: dict) -> str:
+    """The item word at the end of the title: "Velvet Blazer — Emerald Green" -> "blazer"."""
+    return _stem(item["title"].split(" — ")[0].split()[-1].lower())
+
+
+def _better_deal(session: dict) -> dict | None:
+    """
+    A cheaper close match for an overpriced pick, from the same search results:
+    same category, same item word in the title, and not above typical itself.
+    Best-ranked first, so it's the closest of the cheaper matches.
+    """
+    pick = session["selected_item"]
+    for candidate in session["search_results"]:
+        if (candidate is not pick
+                and candidate["category"] == pick["category"]
+                and _title_noun(candidate) == _title_noun(pick)
+                and candidate["price"] < pick["price"]
+                and compare_price(candidate)["verdict"] != "above typical"):
+            return candidate
+    return None
+
+
 # ── planning loop ─────────────────────────────────────────────────────────────
 
 def run_agent(query: str, wardrobe: dict) -> dict:
@@ -199,12 +224,17 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         the run ended early and the later fields will still be None.
 
     ─────────────────────────────────────────────────────────────────────────
-    The branch rule (README, Planning Loop):
+    The branch rules (README, Planning Loop):
 
       If search_listings returns an empty list, put a message in
       session["error"] naming what to change and stop: suggest_outfit is
       never called. Otherwise take the first result as
-      session["selected_item"] and go to suggest_outfit, then create_fit_card.
+      session["selected_item"] and check its price with compare_price.
+
+      Second branch (stretch): if that pick is above typical and the search
+      results hold a cheaper close match, switch to it, keep the original in
+      session["passed_over"], and check the new pick's price. Otherwise go on
+      to suggest_outfit, then create_fit_card.
 
     Each pass of the loop runs one step, reads its inputs back out of the
     session, writes its result into the session, and picks the next step.
@@ -238,6 +268,19 @@ def run_agent(query: str, wardrobe: dict) -> dict:
                 step = "done"
             else:
                 session["selected_item"] = session["search_results"][0]
+                step = "price"
+
+        elif step == "price":
+            session["steps"].append("compare_price")
+            session["price_check"] = compare_price(session["selected_item"])
+            better = None
+            if session["price_check"]["verdict"] == "above typical" and not session["passed_over"]:
+                better = _better_deal(session)
+            if better:  # the second branch: switch, then check the new pick's price
+                session["passed_over"] = session["selected_item"]
+                session["selected_item"] = better
+                step = "price"
+            else:
                 step = "suggest"
 
         elif step == "suggest":
@@ -259,6 +302,31 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
 # ── running it directly ───────────────────────────────────────────────────────
 
+def price_check_line(session: dict) -> str | None:
+    """session["price_check"] as one readable line, or None before there is one."""
+    check, item = session.get("price_check"), session.get("selected_item") or {}
+    if not check:
+        return None
+    if check["price"] is None:
+        return "no price listed, so nothing to compare"
+    if check["typical_price"] is None:
+        return f"{_price(check['price'])}, nothing to compare it with"
+    word = check["verdict"].split()[0]  # below / about / above
+    return (f"{_price(check['price'])}, {word} the typical "
+            f"{_price(check['typical_price'])} for {item.get('category', 'its category')}")
+
+
+
+def switch_line(session: dict) -> str | None:
+    """What the second branch passed over and why, or None when it didn't switch."""
+    old = session.get("passed_over")
+    if not old:
+        return None
+    check = compare_price(old)
+    return (f"Switched from {old['title']} ({_price(old['price'])}, above the typical "
+            f"{_price(check['typical_price'])} for {old['category']}) to this cheaper close match.")
+
+
 def _show(session: dict) -> None:
     if session["error"]:
         print(f"  stopped: {session['error']}")
@@ -267,6 +335,9 @@ def _show(session: dict) -> None:
 
     item = session["selected_item"] or {}
     print(f"  found:    {item.get('title')} — ${item.get('price')} on {item.get('platform')}")
+    print(f"  price:    {price_check_line(session)}")
+    if switch_line(session):
+        print(f"  {switch_line(session)}")
     print(f"  outfit:   {session['outfit_suggestion']}")
     print(f"  fit card: {session['fit_card']}")
 
