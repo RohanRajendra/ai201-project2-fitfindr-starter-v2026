@@ -105,7 +105,7 @@ def cmd_examples(args):
 
 
 def _ask_one(query, wardrobe, use_trace):
-    from agent import run_agent
+    from agent import price_check_line, run_agent
     import trace as trace_module
 
     if use_trace:
@@ -119,6 +119,7 @@ def _ask_one(query, wardrobe, use_trace):
     else:
         item = session["selected_item"] or {}
         print(f"  Found:    {item.get('title')} — ${item.get('price')} on {item.get('platform')}")
+        print(f"  Price:    {price_check_line(session)}")
         print()
         print(f"  Outfit:   {session['outfit_suggestion']}")
         print()

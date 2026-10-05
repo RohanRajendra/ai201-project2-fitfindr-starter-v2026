@@ -176,7 +176,7 @@ unit 4.
   `create_fit_card`.
 
 **Where it lives:** `agent.py::run_agent`. It's a `while` loop over named
-steps (search → suggest → card → done), and every pass calls
+steps (search → price → suggest → card → done), and every pass calls
 `trace.check_iterations(count)`, so a runaway loop raises an error once it
 passes `MAX_ITERATIONS` (10) instead of running forever.
 
@@ -195,11 +195,13 @@ session, not from a local variable. The fields fill in this order:
 2. `parsed` (`description`, `size`, `max_price`)
 3. `search_results`
 4. `selected_item` (which is `search_results[0]`)
-5. `outfit_suggestion`
-6. `fit_card`
+5. `price_check` (what `compare_price` said; stretch tool, see below)
+6. `outfit_suggestion`
+7. `fit_card`
 
 `steps` lists each tool call in order:
-`["search_listings", "suggest_outfit", "create_fit_card"]` on a full run, and
+`["search_listings", "compare_price", "suggest_outfit", "create_fit_card"]` on
+a full run, and
 `["search_listings"]` when the branch stops it. `error` is set only when the
 run stops early.
 
@@ -213,6 +215,9 @@ run stops early.
      2. Your three per-tool terminal tests — the command and what it printed. -->
 
 **One full query**
+
+Recorded before the stretch features. The same query now also prints a
+`Price:` line, shown under Stretch Features below.
 
 ```
 $ python app.py ask 'vintage graphic tee under $30, size M'
@@ -339,9 +344,33 @@ where it happened.
 - **When it has nothing:** an empty item, or a category with no other
   listings, returns `verdict: "no comparison"` and `typical_price: None`.
 - **In the loop:** it's called right after an item is picked. The result goes
-  in `session["price_check"]`, and the output prints it, for example "Price
-  check: $18, below the typical $22 for tops".
-- **Status:** declared, not built yet.
+  in `session["price_check"]`, and the output prints it as a `Price:` line.
+- **Status:** built.
+- **What it changed:**
+  - The loop has a new step between search and `suggest_outfit`.
+  - `steps` on a full run now lists four tools.
+  - The session has a `price_check` field.
+  - `app.py` and `agent.py` print a `Price:` line under `Found:`.
+  - The fit card doesn't use the result, so criterion 4 is untouched.
+- **The tool on its own:**
+
+  ```
+  $ python -c "from tools import compare_price; from utils.data_loader import load_listings; print(compare_price(load_listings()[1]))"
+  {'price': 18.0, 'typical_price': 21.5, 'verdict': 'below typical', 'compared_with': 14}
+  ```
+
+- **A run where the agent called it:**
+
+  ```
+  $ python app.py ask 'vintage graphic tee under $30, size M'
+    Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+    Price:    $18, below the typical $21.50 for tops
+  ...
+
+  $ python -c "from agent import run_agent; from utils.data_loader import get_example_wardrobe; s = run_agent('vintage graphic tee under \$30, size M', get_example_wardrobe()); print(s['steps']); print(s['price_check'])"
+  ['search_listings', 'compare_price', 'suggest_outfit', 'create_fit_card']
+  {'price': 18.0, 'typical_price': 21.5, 'verdict': 'below typical', 'compared_with': 14}
+  ```
 
 ### 2. Second branch: switch away from an overpriced pick
 

@@ -17,7 +17,7 @@ import re
 
 import config
 import trace
-from tools import search_listings, suggest_outfit, create_fit_card, _price, _size_tokens
+from tools import search_listings, suggest_outfit, create_fit_card, compare_price, _price, _size_tokens
 from utils.data_loader import load_listings
 from generate import ModelUnavailable
 
@@ -43,6 +43,7 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "parsed": {},                # description / size / max_price you pulled out of it
         "search_results": [],        # everything search_listings returned
         "selected_item": None,       # the one you chose — goes into suggest_outfit
+        "price_check": None,         # what compare_price said about selected_item
         "wardrobe": wardrobe,        # the user's wardrobe
         "outfit_suggestion": None,   # what suggest_outfit returned
         "fit_card": None,            # what create_fit_card returned
@@ -238,7 +239,12 @@ def run_agent(query: str, wardrobe: dict) -> dict:
                 step = "done"
             else:
                 session["selected_item"] = session["search_results"][0]
-                step = "suggest"
+                step = "price"
+
+        elif step == "price":
+            session["steps"].append("compare_price")
+            session["price_check"] = compare_price(session["selected_item"])
+            step = "suggest"
 
         elif step == "suggest":
             session["steps"].append("suggest_outfit")
@@ -259,6 +265,18 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
 # ── running it directly ───────────────────────────────────────────────────────
 
+def price_check_line(session: dict) -> str | None:
+    """session["price_check"] as one readable line, or None before there is one."""
+    check, item = session.get("price_check"), session.get("selected_item") or {}
+    if not check:
+        return None
+    if check["typical_price"] is None:
+        return f"{_price(check['price'])}, nothing to compare it with"
+    word = check["verdict"].split()[0]  # below / about / above
+    return (f"{_price(check['price'])}, {word} the typical "
+            f"{_price(check['typical_price'])} for {item.get('category', 'its category')}")
+
+
 def _show(session: dict) -> None:
     if session["error"]:
         print(f"  stopped: {session['error']}")
@@ -267,6 +285,7 @@ def _show(session: dict) -> None:
 
     item = session["selected_item"] or {}
     print(f"  found:    {item.get('title')} — ${item.get('price')} on {item.get('platform')}")
+    print(f"  price:    {price_check_line(session)}")
     print(f"  outfit:   {session['outfit_suggestion']}")
     print(f"  fit card: {session['fit_card']}")
 
