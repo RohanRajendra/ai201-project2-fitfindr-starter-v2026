@@ -5,6 +5,9 @@ FitFindr — command line.
     python app.py ask 'vintage graphic tee under $30, size M'
     python app.py ask                     keep asking until you quit
     python app.py ask --empty-wardrobe    run as a user with nothing saved
+    python app.py ask '...' --remember    use your saved wardrobe and add what it
+                                          finds to it (stretch: style memory)
+    python app.py forget                  clear that saved wardrobe
     python app.py listings                browse the data  (Milestone 1)
     python app.py fields                  what fields a listing has
     python app.py examples                queries worth trying, including a dud
@@ -141,14 +144,36 @@ def _ask_one(query, wardrobe, use_trace):
 def cmd_ask(args):
     from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
     import generate
+    import memory
 
-    wardrobe = get_empty_wardrobe() if args.empty_wardrobe else get_example_wardrobe()
-    if args.empty_wardrobe:
+    if args.remember:
+        count = len(memory.load_wardrobe()["items"])
+        print(f"(running with your saved wardrobe: {count} piece{'' if count == 1 else 's'})")
+    elif args.empty_wardrobe:
         print("(running with an empty wardrobe)")
+
+    def ask(query):
+        if args.remember:
+            wardrobe = memory.load_wardrobe()  # re-read, so each query sees the last one's find
+        elif args.empty_wardrobe:
+            wardrobe = get_empty_wardrobe()
+        else:
+            wardrobe = get_example_wardrobe()
+
+        session = _ask_one(query, wardrobe, args.trace)
+
+        if args.remember and not session["error"] and session["selected_item"]:
+            item = session["selected_item"]
+            if memory.remember(item):
+                count = len(memory.load_wardrobe()["items"])
+                print(f"  Remembered {item['title']}. Your saved wardrobe has "
+                      f"{count} piece{'' if count == 1 else 's'} now.\n")
+            else:
+                print(f"  {item['title']} was already in your saved wardrobe.\n")
 
     try:
         if args.query:
-            _ask_one(args.query, wardrobe, args.trace)
+            ask(args.query)
         else:
             print("Ask for something, or press Enter on an empty line to quit.\n")
             while True:
@@ -159,9 +184,19 @@ def cmd_ask(args):
                     break
                 if not query:
                     break
-                _ask_one(query, wardrobe, args.trace)
+                ask(query)
     finally:
         print(generate.usage())
+
+
+def cmd_forget(args):
+    import memory
+
+    count = memory.forget()
+    if count:
+        print(f"Forgot {count} saved piece{'' if count == 1 else 's'}.")
+    else:
+        print("Your saved wardrobe was already empty.")
 
 
 def build_parser():
@@ -187,12 +222,21 @@ def build_parser():
     p_ask = sub.add_parser("ask", help="run the agent")
     p_ask.add_argument("query", nargs="?")
     p_ask.add_argument("--trace", action="store_true", help="print the loop step by step")
-    p_ask.add_argument(
+    wardrobe_choice = p_ask.add_mutually_exclusive_group()
+    wardrobe_choice.add_argument(
         "--empty-wardrobe",
         action="store_true",
         help="run as a user with nothing saved — one of unit 4's failure modes",
     )
+    wardrobe_choice.add_argument(
+        "--remember",
+        action="store_true",
+        help="use your saved wardrobe, and add what this run finds to it (stretch)",
+    )
     p_ask.set_defaults(func=cmd_ask)
+
+    p_forget = sub.add_parser("forget", help="clear the wardrobe --remember saves")
+    p_forget.set_defaults(func=cmd_forget)
 
     return parser
 

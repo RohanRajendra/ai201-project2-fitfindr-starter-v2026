@@ -15,6 +15,9 @@ env/
 # Cached model responses
 .cache/
 
+# Saved wardrobe for `app.py ask --remember` (stretch: style memory)
+.fitfindr/
+
 # OS noise
 .DS_Store
 Thumbs.db

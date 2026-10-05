@@ -440,7 +440,67 @@ where it happened.
   - `python app.py forget` clears it.
 - **Where it's stored:** a gitignored file, `.fitfindr/wardrobe.json`. Runs
   without `--remember`, and `run_eval.py`, never read or change it.
-- **Status:** declared, not built yet.
+- **Status:** built.
+- **What it changed:**
+  - A new `memory.py` has `load_wardrobe`, `remember`, and `forget`.
+  - `app.py ask` takes `--remember`, which can't be combined with
+    `--empty-wardrobe`, and there's a new `app.py forget` command.
+  - After a completed `--remember` run, the selected item is saved as a
+    wardrobe piece. It has the same fields as the wardrobe schema, plus a
+    note saying where it was found and for how much.
+  - `run_agent`, `run_eval.py`, and `serve.py` are unchanged and never read
+    the file.
+  - `.gitignore` now lists `.fitfindr/`.
+- **Two runs where the second is shaped by the first:**
+  - Run 1 starts from an empty memory, so its outfit is general advice. It
+    saves the Y2K Baby Tee.
+  - Run 2's outfits are both built around that tee.
+  - This is a re-run of the same sequence after a wording fix, so both runs
+    are served from the cache. The first time, they made 2 real model calls
+    each and returned the same text.
+
+  ```
+  $ python app.py forget
+  Forgot 2 saved pieces.
+
+  $ python app.py ask 'vintage graphic tee under $30, size M' --remember
+  (running with your saved wardrobe: 0 pieces)
+
+    Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+    Price:    $18, below the typical $21.50 for tops
+
+    Outfit:   Outfit 1: Low-rise light-wash flare jeans and white platform sneakers for a classic Y2K pop star look.
+
+  Outfit 2: A pastel pink pleated tennis skirt and chunky strappy sandals to lean into the playful butterfly aesthetic.
+
+  Styling tip: Keep accessories minimal. Add a small pink shoulder bag and thin silver hoop earrings to let the graphic print stand out.
+
+    Fit card: Channeling total 2000s pop star energy in this little butterfly baby tee. Found it on depop for just 18 dollars and the print is so nostalgic. Pairing it with low rise flares and platforms for the ultimate bratz doll vibe. 🦋✨
+
+  #y2k #babytee #vintage
+
+    Remembered Y2K Baby Tee — Butterfly Print. Your saved wardrobe has 1 piece now.
+
+  0 model calls this session, 2 served from cache
+
+  $ python app.py ask 'denim jacket under $50' --remember
+  (running with your saved wardrobe: 1 piece)
+
+    Found:    Denim Jacket — Light Wash, Cropped — $42.0 on poshmark
+    Price:    $42, about the typical $40 for outerwear
+
+    Outfit:   Outfit One: Layer the Wrangler Denim Jacket over the Y2K Baby Tee — Butterfly Print for a nostalgic, double-vintage look. Add light wash low-rise jeans and chunky platform sneakers to complete the Y2K street style aesthetic.
+
+  Outfit Two: Wear the Y2K Baby Tee — Butterfly Print tucked into a pleated white tennis skirt, then throw the Wrangler Denim Jacket loosely over your shoulders. Finish with pastel sneakers and a beaded shoulder bag for a sweet, throwback daytime vibe.
+
+    Fit card: That early 2000s street style vibe is too good in this little cropped Wrangler jacket. Scored it on Poshmark for $42 and honestly haven't taken it off since it arrived. Tossed it over a baby tee with some chunky sneakers today and the fit is just immaculate. 
+
+  #y2kstyle #denimjacket #poshmarkfinds
+
+    Remembered Denim Jacket — Light Wash, Cropped. Your saved wardrobe has 2 pieces now.
+
+  0 model calls this session, 2 served from cache
+  ```
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 
