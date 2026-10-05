@@ -172,8 +172,12 @@ unit 4.
   max price) and stops. `suggest_outfit` is never called, and `fit_card`
   stays `None`.
 - Otherwise it takes the first (best-scoring) result as
-  `session["selected_item"]` and goes to `suggest_outfit`, then
-  `create_fit_card`.
+  `session["selected_item"]` and checks its price with `compare_price`.
+- **Second branch (stretch):** if that pick is above typical and the search
+  results hold a cheaper close match (same category, same item word in the
+  title, not above typical itself), the loop switches to it, keeps the
+  original in `session["passed_over"]`, and checks the new pick's price.
+  Otherwise it goes on to `suggest_outfit`, then `create_fit_card`.
 
 **Where it lives:** `agent.py::run_agent`. It's a `while` loop over named
 steps (search → price → suggest → card → done), and every pass calls
@@ -194,14 +198,16 @@ session, not from a local variable. The fields fill in this order:
 1. `query`
 2. `parsed` (`description`, `size`, `max_price`)
 3. `search_results`
-4. `selected_item` (which is `search_results[0]`)
+4. `selected_item` (`search_results[0]`, unless the second branch switches
+   to a cheaper close match)
 5. `price_check` (what `compare_price` said; stretch tool, see below)
-6. `outfit_suggestion`
-7. `fit_card`
+6. `passed_over` (only set when the second branch switched)
+7. `outfit_suggestion`
+8. `fit_card`
 
 `steps` lists each tool call in order:
 `["search_listings", "compare_price", "suggest_outfit", "create_fit_card"]` on
-a full run, and
+a full run, with `compare_price` twice when the second branch switched, and
 `["search_listings"]` when the branch stops it. `error` is set only when the
 run stops early.
 
@@ -384,10 +390,45 @@ where it happened.
     output says why.
   - If there isn't, it keeps the original pick, and the price check shows it as
     above typical.
-- **Where it lives:** `agent.py::run_agent`.
-- **Status:** declared, not built yet. On the real data I expect
-  `'velvet blazer'` to switch from the $52 Velvet Blazer to the $38 Vintage
-  Linen Blazer, and none of the example queries to switch.
+- **Where it lives:** `agent.py::run_agent`, in the `price` step.
+  `_better_deal` finds the close match.
+- **Status:** built.
+- **What it changed:**
+  - After a switch the loop goes round one more time, and `compare_price`
+    runs again for the new pick.
+  - The session has a `passed_over` field.
+  - The output adds a line saying what was passed over and why.
+  - It switches at most once per run.
+  - None of the example queries switch, because their picks are below or
+    about typical. Overpriced picks with no close match, such as
+    `'graphic hoodie'` or `'leather bomber'`, are kept.
+- **A run where the branch was taken:**
+
+  ```
+  $ python app.py ask 'velvet blazer'
+
+    Found:    Vintage Linen Blazer — Cream — $38.0 on thredUp
+    Price:    $38, about the typical $42 for outerwear
+    Switched from Velvet Blazer — Emerald Green ($52, above the typical $40 for outerwear) to this cheaper close match.
+
+    Outfit:   Outfit 1: High-Low Contrast
+  Pair the vintage linen blazer with the white ribbed tank top tucked into the baggy straight-leg jeans, dark wash. Add the chunky white sneakers and the black crossbody bag for an effortless high-low mix of structured vintage and relaxed streetwear.
+
+  Outfit 2: Monochromatic Earth Tones
+  Layer the vintage linen blazer over the white ribbed tank top and wide-leg khaki trousers. Cinch the waist with the brown leather belt and finish with the chunky white sneakers for a polished, minimalist daytime look.
+
+    Fit card: Channelling the ultimate coastal grandma energy with this cream linen blazer. Scored it on thredUp for just $38 and the fabric is so crisp and breathable. It instantly pulls together any casual denim look or wide-leg pant moment. 
+
+  #vintagefinds #thrifthaul #minimaliststyle
+
+  0 model calls this session, 2 served from cache
+
+  $ python -c "from agent import run_agent; from utils.data_loader import get_example_wardrobe; s = run_agent('velvet blazer', get_example_wardrobe()); print(s['steps']); print('passed_over:', s['passed_over']['title'], s['passed_over']['price']); print('selected_item:', s['selected_item']['title'], s['selected_item']['price']); print('price_check:', s['price_check'])"
+  ['search_listings', 'compare_price', 'compare_price', 'suggest_outfit', 'create_fit_card']
+  passed_over: Velvet Blazer — Emerald Green 52.0
+  selected_item: Vintage Linen Blazer — Cream 38.0
+  price_check: {'price': 38.0, 'typical_price': 42.0, 'verdict': 'about typical', 'compared_with': 7}
+  ```
 
 ### 3. Style memory: `--remember`
 
