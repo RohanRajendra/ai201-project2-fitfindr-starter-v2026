@@ -1,5 +1,5 @@
 """
-The three FitFindr tools.
+The FitFindr tools: the three the brief asks for, plus compare_price (stretch).
 
 Each one is a standalone function you can call and test on its own, before any
 of them are wired into the loop. Build and test them one at a time — three
@@ -11,8 +11,8 @@ can't tell which layer is lying to you.
     create_fit_card(outfit, new_item)              → str
     compare_price(item)                            → dict   (stretch: a fourth tool)
 
-All three are built, and each was tested on its own from a terminal before
-the loop existed.
+All of them are built, and each was tested on its own from a terminal before
+the loop used it.
 
 ⚠️ Before you write any of them, fill in the **Tool Inventory** section of your
 README (Milestone 2). Four lines per tool: what it does, each input with its
@@ -221,6 +221,9 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
         return "No item to style — search for something first."
 
     items = (wardrobe or {}).get("items") or []
+    # With --remember, re-finding something already saved would list it as
+    # owned too; here it's the thing being styled.
+    items = [piece for piece in items if piece.get("name") != new_item.get("title")]
     if items:
         prompt = (
             f"New thrift find: {_describe(new_item)}\n\n"
@@ -329,28 +332,30 @@ def compare_price(item: dict) -> dict:
         {"price": float, "typical_price": float, "verdict": str, "compared_with": int}
         verdict is "below typical" at 15% or more under the median, "above
         typical" at 15% or more over it, and "about typical" otherwise.
-        With an empty item, or no other listings in the category, verdict is
-        "no comparison" and typical_price is None.
+        With an empty item, an item without a numeric price, or no other
+        listings in the category, verdict is "no comparison" and
+        typical_price is None (price is None when there was no usable price).
 
     Test it from a terminal:
         python -c "from tools import compare_price; from utils.data_loader import load_listings; print(compare_price(load_listings()[1]))"
     """
-    if not item:
+    price = (item or {}).get("price")
+    if isinstance(price, bool) or not isinstance(price, (int, float)):
         return {"price": None, "typical_price": None, "verdict": "no comparison", "compared_with": 0}
 
     peers = [x["price"] for x in load_listings()
              if x["category"] == item.get("category") and x["id"] != item.get("id")]
     if not peers:
-        return {"price": item.get("price"), "typical_price": None,
+        return {"price": price, "typical_price": None,
                 "verdict": "no comparison", "compared_with": 0}
 
     typical = median(peers)
-    ratio = item["price"] / typical
+    ratio = price / typical
     if ratio <= 0.85:
         verdict = "below typical"
     elif ratio >= 1.15:
         verdict = "above typical"
     else:
         verdict = "about typical"
-    return {"price": item["price"], "typical_price": typical,
+    return {"price": price, "typical_price": typical,
             "verdict": verdict, "compared_with": len(peers)}

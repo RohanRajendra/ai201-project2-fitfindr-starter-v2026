@@ -110,7 +110,9 @@ price.
 - **Returns:** a non-empty `str` with 1–2 outfit suggestions in plain text.
   When the wardrobe has items, the prompt asks for outfits that name the pieces
   exactly as they're written in their `name` field. The model sometimes
-  changes the capitalization.
+  changes the capitalization. A wardrobe piece with the same name as
+  `new_item` is skipped, so a find saved by `--remember` isn't treated as
+  something you already own when it comes up again.
 - **When it has nothing:**
   - Empty wardrobe (`items` is `[]` or missing): returns general styling
     advice for the item. Still a non-empty string, and it never claims the
@@ -205,9 +207,10 @@ session, not from a local variable. The fields fill in this order:
 7. `outfit_suggestion`
 8. `fit_card`
 
-`steps` lists each tool call in order:
+`steps` lists the tool each loop step called, in order:
 `["search_listings", "compare_price", "suggest_outfit", "create_fit_card"]` on
-a full run, with `compare_price` twice when the second branch switched, and
+a full run, with `compare_price` twice when the second branch switched (the old
+pick, then the new one), and
 `["search_listings"]` when the branch stops it. `error` is set only when the
 run stops early.
 
@@ -341,14 +344,15 @@ where it happened.
   the other listings in the same category.
 - **Input:** `item` (dict): one listing dict.
 - **Returns:** a `dict` with these keys:
-  - `price` (float)
+  - `price` (float, or None when the item had no usable price)
   - `typical_price` (float): the category median
   - `verdict` (str): `"below typical"` when the price is at least 15% under
     the median, `"above typical"` when it's at least 15% over, and
     `"about typical"` otherwise
   - `compared_with` (int): how many listings the median came from
-- **When it has nothing:** an empty item, or a category with no other
-  listings, returns `verdict: "no comparison"` and `typical_price: None`.
+- **When it has nothing:** an empty item, an item without a numeric price, or
+  a category with no other listings returns `verdict: "no comparison"` and
+  `typical_price: None`.
 - **In the loop:** it's called right after an item is picked. The result goes
   in `session["price_check"]`, and the output prints it as a `Price:` line.
 - **Status:** built.
@@ -399,6 +403,14 @@ where it happened.
   - The session has a `passed_over` field.
   - The output adds a line saying what was passed over and why.
   - It switches at most once per run.
+  - `_better_deal` also prices each candidate with `compare_price`, and those
+    checks aren't added to `steps`. A switched run makes three
+    `compare_price` calls but records two.
+  - **Known limit:** matching is loose (see Unit 4 notes), so a switch can
+    contradict a word you typed. For example, `'blue jeans'` switches to the
+    black jeans. If matching gets stricter in Unit 4, `'velvet blazer'`
+    stops switching (`'graphic tee'` still would), so this run log will need
+    re-capturing.
   - None of the example queries switch, because their picks are below or
     about typical. Overpriced picks with no close match, such as
     `'graphic hoodie'` or `'leather bomber'`, are kept.
@@ -451,10 +463,14 @@ where it happened.
   - `run_agent`, `run_eval.py`, and `serve.py` are unchanged and never read
     the file.
   - `.gitignore` now lists `.fitfindr/`.
+  - A saved file that can't be read, or isn't shaped like a wardrobe, counts
+    as empty, and `forget` always deletes it. Saves go to a temp file first,
+    so a run that dies mid-write can't wipe earlier pieces.
 - **Two runs where the second is shaped by the first:**
   - Run 1 starts from an empty memory, so its outfit is general advice. It
     saves the Y2K Baby Tee.
-  - Run 2's outfits are both built around that tee.
+  - Run 2's outfits are built around the new denim jacket, and both of them
+    use that tee.
   - This is a re-run of the same sequence after a wording fix, so both runs
     are served from the cache. The first time, they made 2 real model calls
     each and returned the same text.

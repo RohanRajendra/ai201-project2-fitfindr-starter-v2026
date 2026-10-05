@@ -224,12 +224,17 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         the run ended early and the later fields will still be None.
 
     ─────────────────────────────────────────────────────────────────────────
-    The branch rule (README, Planning Loop):
+    The branch rules (README, Planning Loop):
 
       If search_listings returns an empty list, put a message in
       session["error"] naming what to change and stop: suggest_outfit is
       never called. Otherwise take the first result as
-      session["selected_item"] and go to suggest_outfit, then create_fit_card.
+      session["selected_item"] and check its price with compare_price.
+
+      Second branch (stretch): if that pick is above typical and the search
+      results hold a cheaper close match, switch to it, keep the original in
+      session["passed_over"], and check the new pick's price. Otherwise go on
+      to suggest_outfit, then create_fit_card.
 
     Each pass of the loop runs one step, reads its inputs back out of the
     session, writes its result into the session, and picks the next step.
@@ -302,6 +307,8 @@ def price_check_line(session: dict) -> str | None:
     check, item = session.get("price_check"), session.get("selected_item") or {}
     if not check:
         return None
+    if check["price"] is None:
+        return "no price listed, so nothing to compare"
     if check["typical_price"] is None:
         return f"{_price(check['price'])}, nothing to compare it with"
     word = check["verdict"].split()[0]  # below / about / above
