@@ -82,8 +82,8 @@ def _stem(word: str) -> str:
 def _stems(text: str) -> set[str]:
     return {_stem(w) for w in _keywords(text)}
 
-def _score(wanted: set[str], listing: dict) -> int:
-    """One point per wanted word found anywhere in the listing; title hits count twice."""
+def _listing_words(listing: dict) -> tuple[set[str], set[str]]:
+    """A listing's title words, and every word it has: title, description, category, tags, colors, brand."""
     title = _stems(listing["title"])
     everything = title | _stems(" ".join([
         listing["description"],
@@ -92,6 +92,11 @@ def _score(wanted: set[str], listing: dict) -> int:
         " ".join(listing["colors"]),
         listing["brand"] or "",  # brand is None for most listings
     ]))
+    return title, everything
+
+def _score(wanted: set[str], listing: dict) -> int:
+    """One point per wanted word found anywhere in the listing; title hits count twice."""
+    title, everything = _listing_words(listing)
     return len(wanted & everything) + len(wanted & title)
 
 def search_listings(
@@ -129,10 +134,15 @@ def search_listings(
     realistic — thrift listings often have no brand. If something you write
     assumes a brand is always there, you will find out in unit 4.
 
-    Scoring: one point per description keyword found in the title,
-    description, category, style tags, colors or brand, with title hits
-    counted twice. Stopwords are dropped and plurals folded ("tees" -> "tee").
-    Ties go to the cheaper listing.
+    Matching: a listing is kept only if it contains every description keyword
+    somewhere in its title, description, category, style tags, colors or
+    brand. Until unit 4 one shared keyword was enough, so "leather jacket
+    under $40" matched a leather belt and "red cowboy boots" a red crewneck.
+    Stopwords are dropped and plurals folded ("tees" -> "tee").
+
+    Scoring: one point per keyword found, with title hits counted twice, so
+    listings with more of the words in their title come first. Ties go to the
+    cheaper listing.
 
     Test it from a terminal before you move on:
         python -c "from tools import search_listings; print(search_listings('graphic tee', max_price=30))"
@@ -147,9 +157,9 @@ def search_listings(
             continue
         if not _size_matches(size, listing["size"]):
             continue
-        score = _score(wanted, listing)
-        if score > 0:
-            scored.append((score, listing))
+        if not wanted <= _listing_words(listing)[1]:  # every keyword, not just one
+            continue
+        scored.append((_score(wanted, listing), listing))
 
     scored.sort(key=lambda pair: (-pair[0], pair[1]["price"]))
     return [listing for _, listing in scored[: config.SEARCH_RESULT_LIMIT]]

@@ -29,18 +29,26 @@ import config
 
 _lines: list[str] = []
 _step_number = 0
+_recording = False  # off until start_trace(), so a plain `ask` prints no trace
 
 
 def start_trace() -> None:
-    """Clear the trace. Call this at the start of each run."""
-    global _step_number
+    """
+    Clear the trace and start recording. Call this at the start of each run.
+
+    app.py calls it for `ask --trace`, and run_eval.py for every try. Until
+    it's called, step() does nothing.
+    """
+    global _step_number, _recording
     _lines.clear()
     _step_number = 0
+    _recording = True
 
 
 def step(name: str, inputs=None, returned=None, note: str = "") -> None:
     """
-    Record one step of the loop.
+    Record one step of the loop, and print it. Does nothing before
+    start_trace() has been called.
 
     Args:
         name:     what happened — usually a tool name.
@@ -50,6 +58,8 @@ def step(name: str, inputs=None, returned=None, note: str = "") -> None:
         note:     an optional word on why, e.g. "branch: empty, stopping".
     """
     global _step_number
+    if not _recording:
+        return
     _step_number += 1
 
     line = f"[{_step_number}] {name}"
