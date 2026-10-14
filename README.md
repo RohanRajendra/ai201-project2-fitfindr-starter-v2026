@@ -1362,6 +1362,11 @@ about each, and why I stopped where I did.
   - The retry is the declared stretch improvement, measured in its own run.
   - The catch: a run where the service happens to behave can't show the
     retry working, so its measurement depends on the service.
+- **Update after the stretch:** step 1 is now built, as the second measured
+  improvement. Criterion 1 was MET (5/5) in the third run. The retry
+  caught the one 503 that run hit, though most of the jump came from a
+  healthier service (see Unit 4 Stretch Features, item 1). Steps 2 and 3
+  are still open.
 
 **Criterion 4, MISSED (1/5 after, 3/5 before): two causes.**
 - **The same 503s:** 2 of the 5 tries ended with no card. The fix above
@@ -1379,6 +1384,10 @@ about each, and why I stopped where I did.
   - It's noisy to measure: one bad card in five before the change.
   - Fixing it alongside search would have mixed two changes in one after
     run.
+- **Update after the stretch:** with the outages retried, criterion 4's third
+  run missed 2/5 for this reason alone. 9 of 20 cards wrote the price in
+  words ("18 dollars", "32 dollars", "forty bucks"). This prompt fix is now
+  the only thing between criterion 4 and its target.
 
 **Also still broken, outside the five criteria.** The first two were found by
 a fresh code review after the after run. I'm writing them down rather than
@@ -1463,7 +1472,83 @@ nothing else.
   - The console's retry lines show whether the retry fired at all. If the
     service behaves during that run, the run can't show the retry working,
     and I'll say so.
-- **Status:** not built yet.
+- **Status:** built.
+  - In `generate.py`, a new `_server_busy()` recognizes 500, 503 and 504
+    errors. `generate()` now retries those on the same backoff as a 429,
+    printing a `[model busy]` line each time.
+  - If every attempt is busy, it raises `ModelUnavailable`, so the agent's
+    handler still shows its message.
+  - The check script (fake client, no real calls) confirmed the rest:
+    - A 400 rejected key and a 404 unknown model still fail on the first
+      attempt.
+    - 429s behave exactly as before.
+    - A 503 on `create_fit_card` no longer ends the run.
+
+**Run Log — Third**
+
+`python run_eval.py --label second` wrote
+[`results/run_2026-10-13_2231_second.md`](results/run_2026-10-13_2231_second.md).
+It ran the same scenarios and the same five queries per row with the cache
+off, and made 46 model calls.
+
+| Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
+|---|---|---|---|---|---|---|---|
+| 1. A matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. The found item reaches `suggest_outfit` | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. Fit cards name price and platform, and vary | 5 of 5 | FAIL | FAIL | FAIL | PASS | PASS | MISSED (2/5) |
+| 5. A down model gets a readable message | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+
+- Criterion 4's three FAILs all wrote the price in words: "18 dollars", "32
+  dollars" and "forty bucks". Every try produced a card.
+- The empty-wardrobe diagnostic completed 5 of 5.
+
+**All three runs side by side**
+
+| Criterion | Target | Before | After (strict matching) | Third (plus the retry) |
+|---|---|---|---|---|
+| 1. A matching query completes all three tools | 4 of 5 | MISSED (2/5) | MISSED (1/5) | **MET (5/5)** |
+| 2. An impossible query stops before the second tool | 5 of 5 | MISSED (3/5) | MET (5/5) | MET (5/5) |
+| 3. The found item reaches `suggest_outfit` | 5 of 5 | MET (5/5) | MET (5/5) | MET (5/5) |
+| 4. Fit cards name price and platform, and vary | 5 of 5 | MISSED (3/5) | MISSED (1/5) | MISSED (2/5) |
+| 5. A down model gets a readable message | 5 of 5 | MET (5/5) | MET (5/5) | MET (5/5) |
+| *Runs stopped by a model error, outside criterion 5* | — | 7 of 22 | 11 of 20 | **0 of 20** |
+| *Cards with the price written in words* | — | 3 of 15 | 3 of 9 | 9 of 20 |
+
+**Did it help, and how I know:** yes, but this run can only show it once.
+
+- **The retry fired once, and that once mattered.** The console of the third
+  run shows it in criterion 1, try 2:
+
+  ```
+  A matching query completes all three tools  (example wardrobe)
+    try 1 [vintage graphic tee under $30]: completed — fit card 222 chars
+    [model busy] the service answered 503 UNAVAILABLE. Waiting 1s, then trying again (attempt 1 of 5).
+    try 2 [90s track jacket in size M]: completed — fit card 279 chars
+  ```
+
+  - In the before and after runs, that same 503 ended the run with the "styling
+    service is unavailable" message.
+  - Here the second attempt worked, and the try passed. Without the retry,
+    criterion 1 would have been 4/5. That still meets its target of 4 of 5,
+    but only just.
+- **Most of the jump from 1/5 to 5/5 was the service, not my change.**
+  - This run hit one busy answer in 46 calls. The after run had 11 runs
+    stopped by 503s, with calls taking 30–40 seconds.
+  - So this run shows the retry working, but not how much it would save on a
+    bad day like the after run.
+  - A fair way to measure that would be to run the same scenarios while the
+    service is struggling, with and without the retry. I can't schedule
+    that.
+- **What it didn't fix: criterion 4.** With the outages gone, every one of
+  criterion 4's misses is diagnosis 3. Across the run, 9 of 20 cards wrote the
+  price in words.
+  - That's the problem I left for What's Still Broken.
+  - It now limits criterion 4 on its own. If the service stays healthy, the
+    price wording is the one thing between criterion 4 and its target.
+- **Cost:** a retried call is one more request. This run spent 46 calls (45
+  plus 1 retry), and the free tier allows 500 a day. On a bad day each failing
+  call could take up to 5 attempts.
 
 ### 2. A second tool on MCP: `compare_price`
 
