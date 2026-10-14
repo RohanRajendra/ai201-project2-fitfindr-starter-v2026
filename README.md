@@ -380,11 +380,8 @@ Can't write a fit card without an outfit suggestion.
 
 **Moment 4: arguing against my own verdicts**
 
-- *What I asked:* The course's prompt, given to a fresh Claude along with my
-  criteria, tries and verdicts: "Argue the opposite verdict as strongly as
-  you can."
-- *What came back:* No mark was wrong on a plain reading, but it made four
-  real arguments:
+- *What I asked:* My existing criteria and verdicts: push the criteria on its edge cases and contradict the verdicts. 
+- *What came back:* four arguments were returned based on the tests:
   1. The outages belong to criterion 5.
   2. "red cowboy boots" returned 3 results, so it "matched".
   3. The second branch's swap meant the "found item" never reached
@@ -404,8 +401,7 @@ Can't write a fit card without an outfit suggestion.
 
 **Moment 5: which tool to move onto MCP second**
 
-- *What I asked:* Plan the unit, including which tool to move onto MCP for
-  the stretch.
+- *What I asked:* Planning the mcp tool call for additional features. 
 - *What came back:*
   - Every `call_tool` starts `mcp_server.py` as a separate process.
   - That process gets only a short list of environment variables, and it
@@ -415,11 +411,8 @@ Can't write a fit card without an outfit suggestion.
     measuring what they claim, and the calls would bypass `generate.py`'s
     rate limiter.
 - *What I changed:*
-  - I picked `compare_price`, which makes no model call, for the "second
-    tool on MCP" stretch item. That's declared, and then built, after the
-    milestones.
-  - Criterion 5 breaks the key inside the process that makes the model
-    calls.
+  - `compare_price` to make no model call, for the "second tool on MCP" additional feature. 
+  - Criterion 5 breaks the key inside the process that makes the model calls.
 
 ---
 
