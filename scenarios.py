@@ -19,8 +19,8 @@ data/listings.json, before any run.
 SCENARIOS = [
     {
         # Criterion 1. The five matching queries app.py ships as examples,
-        # one per try: a tee, a jacket, a dress, shoes, a jacket again, with
-        # a price, a size, both, or neither.
+        # one per try: a tee, a jacket, a dress, shoes, a jacket again, each
+        # with a price ceiling or a size.
         "name": "A matching query completes all three tools",
         "queries": [
             "vintage graphic tee under $30",
@@ -53,7 +53,9 @@ SCENARIOS = [
         # Criterion 3. Five queries that each return results, covering the
         # ways an item reaches suggest_outfit: the second branch swapping the
         # pick ('velvet blazer'), an overpriced pick that's kept, a size, a
-        # price, and both.
+        # price, and both. Since unit 4's strict matching, 'velvet blazer'
+        # finds only the velvet blazer and no longer swaps; it stays in the
+        # list so the before and after runs are the same test.
         "name": "The found item reaches `suggest_outfit`",
         "queries": [
             "velvet blazer",
@@ -119,8 +121,8 @@ def validate() -> list[str]:
                 problems.append(f"scenario {i}'s queries should be a non-empty list")
             elif not all(isinstance(q, str) and q.strip() for q in queries):
                 problems.append(f"scenario {i} has an empty query in its list")
-        elif not str(scenario.get("query", "")).strip():
-            problems.append(f"scenario {i} has no query")
+        elif not (isinstance(scenario.get("query"), str) and scenario["query"].strip()):
+            problems.append(f"scenario {i} has no query (or it isn't a string)")
         if scenario.get("wardrobe") not in WARDROBES:
             problems.append(
                 f"scenario {i} has wardrobe {scenario.get('wardrobe')!r} — "

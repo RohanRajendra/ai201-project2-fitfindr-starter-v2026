@@ -250,7 +250,9 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
     Returns:
         The session dict. **Check session["error"] first** — if it isn't None,
-        the run ended early and the later fields will still be None.
+        the run ended early and the fields after the failed step are still
+        None. (If only create_fit_card failed, outfit_suggestion holds the
+        outfit that was already made.)
 
     ─────────────────────────────────────────────────────────────────────────
     The branch rules (README, Planning Loop):

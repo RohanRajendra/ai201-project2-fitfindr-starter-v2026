@@ -16,6 +16,12 @@
 > All three tools and the planning loop are built, so that last command runs
 > the whole agent.
 >
+> Unit 4 additions:
+> - The search runs through MCP (`mcp_server.py`).
+> - `python app.py ask '...' --trace` prints the loop step by step.
+> - `python run_eval.py --label <name>` runs the five-tries test. That costs
+>   about 45 model calls, so mind a free-tier key.
+>
 > **The rest of this file is your submission.** Fill it in as you go.
 
 ---
@@ -347,6 +353,73 @@ Can't write a fit card without an outfit suggestion.
 - *What I changed:* I replaced that sentence with the "size 30" vs "W30"
   example. Since then I check every
   claim in a reason against the real data before committing it.
+
+**Unit 4**
+
+**Moment 3: the model "went down" with a working key**
+
+- *What I asked:* Run the before test and explain every miss.
+- *What came back:*
+  - 7 of the 22 runs that reached the model failed with the "styling service
+    is unavailable" message. My key was fine.
+  - Claude used the run log to rule out the key and my pacing. The same key
+    worked in the other 15 runs, and the run averaged about 8 calls a
+    minute, so the pacer never waited.
+  - A 10-call probe and a 20-call replay had no errors, so the failures were
+    passing ones. The raw error hadn't been recorded anywhere.
+  - In the after run it got worse (11 of 20). A probe during that stretch
+    caught the raw error: `503 UNAVAILABLE … high demand … Please try again
+    later.`
+- *What I changed:*
+  - I kept both runs exactly as they happened instead of re-running for
+    better numbers.
+  - I wrote the diagnosis as "`generate()` never retries a 503", with the
+    evidence.
+  - I fixed search first, because a fix for passing errors can't be shown
+    working in one run. The retry is my stretch improvement.
+
+**Moment 4: arguing against my own verdicts**
+
+- *What I asked:* The course's prompt, given to a fresh Claude along with my
+  criteria, tries and verdicts: "Argue the opposite verdict as strongly as
+  you can."
+- *What came back:* No mark was wrong on a plain reading, but it made four
+  real arguments:
+  1. The outages belong to criterion 5.
+  2. "red cowboy boots" returned 3 results, so it "matched".
+  3. The second branch's swap meant the "found item" never reached
+     `suggest_outfit`.
+  4. Criterion 5 wasn't proven, because the key was changed in memory and
+     there was no evidence of "no stack trace".
+- *What I changed:*
+  - No verdicts changed. I checked each argument against the code and the
+    logs, and wrote the answers into Verdicts and Diagnoses:
+    - Criterion 1's own reason counts outages.
+    - The other reading of "matches" makes criterion 2 circular.
+    - During a run only `generate._get_client()` reads the key.
+    - The run had 0 tracebacks.
+  - Its passing remark about a card saying "forty four dollars" became a
+    count: 3 of 15 cards spelled the price out. That turned a one-off into
+    a pattern.
+
+**Moment 5: which tool to move onto MCP second**
+
+- *What I asked:* Plan the unit, including which tool to move onto MCP for
+  the stretch.
+- *What came back:*
+  - Every `call_tool` starts `mcp_server.py` as a separate process.
+  - That process gets only a short list of environment variables, and it
+    reads `.env` itself.
+  - So a model tool behind MCP would never see `run_eval.py`'s cache-off
+    switch or criterion 5's broken key. Those test runs would quietly stop
+    measuring what they claim, and the calls would bypass `generate.py`'s
+    rate limiter.
+- *What I changed:*
+  - I picked `compare_price`, which makes no model call, for the "second
+    tool on MCP" stretch item. That's declared, and then built, after the
+    milestones.
+  - Criterion 5 breaks the key inside the process that makes the model
+    calls.
 
 ---
 
@@ -858,7 +931,8 @@ criterion 1 tries 1, 3 and 4, and criterion 4 try 3.
 
 **2. Search counts a one-word overlap as a match, so the empty branch never
 fires.** This caused 2 misses: criterion 2 tries 4 and 5.
-- **Place:** a tool, `search_listings` (`tools.py:151`). The loop's branch is
+- **Place:** a tool: the `score > 0` filter in `tools.py::search_listings`,
+  as it stood for the before run. The loop's branch is
   fine: it stopped all three queries that really came back `[]` (tries 1–3).
 - **Mechanism:** a listing is kept if it shares any one word with the
   description (`score > 0`), and ties go to the cheaper listing.
@@ -876,7 +950,8 @@ fires.** This caused 2 misses: criterion 2 tries 4 and 5.
 **3. The fit card prompt never says how to write the price.** This caused 1
 miss, criterion 4 try 1, but it showed up 3 times.
 - **Place:** the model's output, from `create_fit_card`'s prompt
-  (`tools.py:306` and `311`).
+  (`tools.py::create_fit_card`: the lines "I just bought this on {platform}
+  for {price}." and "Mention the item, the price ({price})…").
 - **Mechanism:** the prompt gives the price as "for $18" and asks to "Mention
   … the price ($18)", but it never says to write it that way. At
   `TEMPERATURE` 0.9, in the casual voice the prompt asks for, the model
@@ -1148,6 +1223,11 @@ Styling tip: Because the jacket is cropped and light wash, balance your proporti
   (1 sub-exception)" instead, because the error is raised inside an async
   task group and gets wrapped on the way out. A misspelled tool name, such
   as `call_tool('search_listing', ...)`, gets the same unhelpful message.
+- **What the move meant later:** when Milestone 5 made matching strict, the
+  tool's description in `mcp_server.py` had to change in the same commit as
+  the code. That description is a published contract now. An agent built
+  against the old wording would still expect one shared word to count as a
+  match.
 
 
 
@@ -1250,7 +1330,9 @@ Why each try failed:
 - **What it cost.** Strict matching can now stop on a query a person would
   call a match.
   - "comfy denim jacket" finds nothing, because no listing says "comfy",
-    even though a denim jacket exists.
+    even though a denim jacket exists. The stop message then says "Try a
+    broader word for the item, like … 'jacket'", which the user already
+    typed.
   - `velvet blazer` now finds only the velvet blazer, since the linen blazer
     doesn't say "velvet". So the second branch no longer switches for it,
     and criterion 3's try 1 now tests a plain handoff instead of a switched
@@ -1266,6 +1348,93 @@ Why each try failed:
      you did. "I ran out of time" is fine if it's true. Pretending nothing is
      left is not. -->
 
+After the improvement, two criteria are still missed. Here's what I'd do
+about each, and why I stopped where I did.
+
+**Criterion 1, MISSED (1/5 after, 2/5 before): model outages end the run.**
+- **What's broken:** the model service sometimes answers `503 UNAVAILABLE`
+  ("high demand… usually temporary… try again later"). `generate()` retries
+  only rate-limit errors, so a 503 becomes `ModelUnavailable` on the first
+  attempt, and the handler stops the run.
+- **What I'd do:**
+  1. Retry a 503 inside `generate.py`, once or twice with a short wait,
+     before giving up, the same way it already retries a 429.
+  2. Record the underlying error in the trace, but not in the user's
+     message, so a run log can tell a passing 503 from a dead key.
+  3. With that recorded, the message could also stop telling someone with a
+     503 to check their key.
+- **Why I stopped:**
+  - Milestone 5 allows one change, and strict matching was the one I could
+    measure cleanly.
+  - The retry is the declared stretch improvement, measured in its own run.
+  - The catch: a run where the service happens to behave can't show the
+    retry working, so its measurement depends on the service.
+
+**Criterion 4, MISSED (1/5 after, 3/5 before): two causes.**
+- **The same 503s:** 2 of the 5 tries ended with no card. The fix above
+  covers these.
+- **Spelled-out prices:** "eighteen bucks" and "forty bucks" in the after
+  run. Across both runs, 6 of 24 cards wrote the price without digits. The
+  prompt shows the price as "$18" but never says to write it that way.
+- **What I'd do:**
+  - Change the prompt to "write the price exactly as $18, with the dollar
+    sign and digits, never in words".
+  - More robust: check the card in code. If the exact `$18` isn't in it,
+    regenerate once.
+- **Why I stopped:**
+  - It was the third diagnosis.
+  - It's noisy to measure: one bad card in five before the change.
+  - Fixing it alongside search would have mixed two changes in one after
+    run.
+
+**Also still broken, outside the five criteria.** The first two were found by
+a fresh code review after the after run. I'm writing them down rather than
+changing the agent again: this unit allows one improvement, and a further
+change after the measured runs wouldn't be measured.
+- **Strict matching sometimes stops when it shouldn't, and the advice then
+  dead-ends.**
+  - Six everyday phrasings now all stop with "Try a broader word for the
+    item, like 'dress', 'jacket' or 'tee'": "cheap denim jacket", "comfy
+    denim jacket", "a nice jacket for fall", "denim jacket in good
+    condition", "cute summer dress", and "jeans for $30 or less" (the parser
+    leaves "or less" in).
+  - That advice is a dead end, because the user often already typed
+    "jacket" or "dress". It never names the word that actually blocked the
+    match ("cheap").
+  - Next step: when the full description finds nothing, name the word or
+    words whose removal brings results back. Or require only the item word
+    ("jacket") and use the other words for ranking.
+  - I stopped because loosening the rule needs its own measured run, and the
+    strict rule is what made criterion 2 pass.
+- **When only the fit card fails, the message hides an outfit that was
+  made.**
+  - If `suggest_outfit` succeeds and then `create_fit_card` hits a 503,
+    `session["outfit_suggestion"]` holds a finished outfit, but the message
+    says "there's no outfit or fit card this time" and `app.py` shows only
+    the message.
+  - This happened in 10 of the logged tries: 4 before, 6 after. Criterion 1
+    try 1, pasted under Run Log — Before, is one of them.
+  - No verdict depends on it. Criteria 1 and 4 still had no card, and
+    criterion 5's model fails at `suggest_outfit`.
+  - Next step: give a card failure its own message ("here's your outfit,
+    but the fit card couldn't be written"), and have `app.py` print the
+    outfit when there is one. I corrected `run_agent`'s docstring, which
+    claimed the later fields stay `None`.
+- **Criterion 3 lost its switched try.** `velvet blazer` no longer triggers
+  the second branch, so criterion 3's try 1 now tests a plain handoff.
+  - The scenario list should use a query that still switches, such as
+    `vintage levi's jeans`.
+  - I kept the scenarios fixed so that before and after stay comparable.
+- **The starter's MCP client hides a useful error.** "The server doesn't
+  offer a tool called…" comes out as "unhandled errors in a TaskGroup". That
+  file is given plumbing, so I left it alone.
+- **Small wording and parsing gaps from unit 3:**
+  - "Only US 8 is listed for it: try one of those" reads oddly when only one
+    size is listed.
+  - `tee under $1,000` reads the ceiling as $1.
+  - `30 or less` isn't read as a price.
+  - `anything for me under $20` says nothing matches "for me", instead of
+    asking what item you want.
 
 
 <!-- ═════════════════════════════════════════════════════════════════════
