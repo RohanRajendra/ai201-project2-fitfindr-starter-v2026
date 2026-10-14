@@ -736,17 +736,145 @@ Accidentally unlocked peak 2000s mall goth energy with this little butterfly bab
      Look for a pattern. Three misses on the same tool is one problem, not
      three. -->
 
+Each verdict counts the passes in the before run and compares them with the
+target written in unit 3. 4 of 5 needs at least 4 passes, and 5 of 5 needs
+all five.
+
 | # | Criterion | Target | Verdict | How I decided |
 |---|---|---|---|---|
-| 1 |  |  |  |  |
-| 2 |  |  |  |  |
-| 3 |  |  |  |  |
-| 4 |  |  |  |  |
-| 5 |  |  |  |  |
+| 1 | A matching query completes all three tools | 4 of 5 | **MISSED (2/5)** | A try passes when all three tools run and a fit card comes back. Tries 1, 3 and 4 ended with no card, because the model call failed. 2 passes is under 4. |
+| 2 | An impossible query stops before the second tool | 5 of 5 | **MISSED (3/5)** | A try passes when the steps are only `search_listings` and the message names something to change. Tries 4 and 5 picked a listing and called `suggest_outfit`. 3 passes is under 5. |
+| 3 | The found item reaches `suggest_outfit` | 5 of 5 | **MET (5/5)** | A try passes when `suggest_outfit` was called and its `in:` line in the trace has the same title, price and platform as `selected_item`. All 5 matched. In try 4 the model failed inside `suggest_outfit`, but the call was made with the right item, which is what this criterion checks. |
+| 4 | Fit cards name price and platform, and vary | 5 of 5 | **MISSED (3/5)** | A card passes when it has the price with a `$`, names the platform, and opens with five words (ignoring case and punctuation) that no other card opens with. A run with no card is a miss. Try 1 wrote "eighteen bucks", and try 3 had no card. All openings were different. |
+| 5 | A down model gets a readable message | 5 of 5 | **MET (5/5)** | A try passes when it stops with no crash and no outfit or card, and the message says the styling service is unavailable and to try again, with no exception name or status code. All 5 did. The console shows 0 tracebacks. |
+
+**Arguing against my own verdicts.** As the milestone suggests, I gave a
+fresh Claude the criteria, the five tries for each, and my verdicts, and asked
+it to "argue the opposite verdict as strongly as you can". It found no mark
+wrong on a plain reading. Its strongest arguments, and why each verdict
+stands:
+
+- **Criterion 1** (the case for MET): the three misses were outages, and
+  criterion 5 is where outages are tested, so they shouldn't count here.
+  - *Stands as MISSED.* The criterion's own reason counts these. It sets 4 of
+    5 because a model call can fail "in ways my loop doesn't handle yet". The
+    agent didn't return a fit card, and that's what criterion 1 measures.
+- **Criterion 2** (the case for MET): tries 4 and 5 found 3 results, so they
+  weren't queries that "match no listings".
+  - *Stands as MISSED.* No listing is a leather jacket under $40, and no
+    listing is red cowboy boots.
+  - If "matches" meant "search returns something", criterion 2 would be
+    circular: it would only ever be tested on queries the branch already
+    stops.
+  - Criteria 3–5 say "return at least one search result" when they mean the
+    search; criteria 1 and 2 say "matches".
+- **Criterion 3** (the case for MISSED): in try 1 search found the Velvet
+  Blazer first, but the Linen Blazer reached `suggest_outfit`. So the "found
+  item" didn't reach it.
+  - *Stands as MET.* The criterion compares the trace with
+    `session["selected_item"]`, not with the first result.
+  - The swap is the second branch working on purpose. The trace says so
+    ("above typical: switch to Vintage Linen Blazer — Cream"), and the
+    velvet blazer is kept in `session["passed_over"]`.
+  - One thing this does show: criterion 3's reason ("`run_agent` stores the
+    first search result in `session["selected_item"]`") was written before
+    the second branch existed, and isn't always true now.
+- **Criterion 5** (the case for "not proven"):
+  - **The key was changed in memory, not in `.env`.** During a run, only
+    `generate._get_client()` reads `GEMINI_API_KEY`, and it reads it from the
+    environment at the first model call. That's exactly what the in-memory
+    change sets, so the code path is the one a `.env` edit takes.
+  - **The run log doesn't show "no stack trace".** `run_eval.py` records any
+    exception as a crash. There were 0 crashes, and the run's console output
+    has 0 tracebacks.
+  - **The message names `GEMINI_API_KEY`.** That's a setting the user put in
+    `.env` themselves, not an exception name or a status code.
 
 **Diagnoses**
 
+Seven misses, from **three separate problems**. None of them is in the loop's
+branch or the session.
 
+**1. The model call fails and nothing retries it.** This caused 4 misses:
+criterion 1 tries 1, 3 and 4, and criterion 4 try 3.
+- **Place:** a tool. It's the model call that `suggest_outfit` and
+  `create_fit_card` both make through `generate.generate()`. The loop's
+  handler did its job: it caught `ModelUnavailable` and stopped with the
+  message.
+- **Mechanism:** `generate()` retries only errors that look like rate limits:
+  "429", "resource … exhaust", or "rate … limit" (`generate.py:326–332`).
+  Any other error from the service becomes `ModelUnavailable` on the first
+  attempt.
+  - In the before run, 7 of the 22 runs that reached the model hit such an
+    error with a working key: 4 in `create_fit_card` and 3 in
+    `suggest_outfit`, with no pattern by tool or item.
+  - Four of those cost a criterion its fit card.
+  - The other three landed in tries whose criterion doesn't need the card
+    (criterion 2 try 4, criterion 3 tries 1 and 4).
+- **Why I think it was the service, not my key, my pacing, or my code:**
+  - The same key worked in the other 15 runs in the same process.
+  - In criterion 1 try 1, `suggest_outfit` succeeded seconds before
+    `create_fit_card` failed.
+  - The run averaged about 8 calls a minute against a limit of 15, so the
+    pacer never waited, and no 429 retry was printed.
+  - Right afterwards, 10 direct calls and a replay of criteria 1 and 4 (20
+    more calls) had no errors.
+- **What I can't say: which error it was.** My handler shows the user one
+  message, by design, and the trace doesn't keep the underlying error. So
+  the run log can't tell a passing service error from a dead key, and that's
+  a gap of its own.
+  - Criterion 1's reason predicted this miss: "a `ModelUnavailable` error can
+    occur that nothing catches". It's caught now, but caught means stopped.
+
+**2. Search counts a one-word overlap as a match, so the empty branch never
+fires.** This caused 2 misses: criterion 2 tries 4 and 5.
+- **Place:** a tool, `search_listings` (`tools.py:151`). The loop's branch is
+  fine: it stopped all three queries that really came back `[]` (tries 1–3).
+- **Mechanism:** a listing is kept if it shares any one word with the
+  description (`score > 0`), and ties go to the cheaper listing.
+  - "leather jacket under $40": the only listing with both words, the 90s
+    Leather Bomber, is $75, so the price filter removes it. What's left are
+    one-word matches: the Leather Belt, the Mini Shoulder Bag ("leather"),
+    and the Shacket ("jacket" in its description). The belt and the bag both
+    score 2, and the $12 belt is cheaper, so the loop styled a belt. It
+    should have stopped and said the closest match is $75.
+  - "red cowboy boots": no listing has "cowboy". Three listings tie at 2,
+    each matching a single word: the Faded Red crewneck, the Plaid Red/Black
+    flannel, and the Suede Chelsea Boots. The cheapest, the $21 crewneck,
+    won.
+
+**3. The fit card prompt never says how to write the price.** This caused 1
+miss, criterion 4 try 1, but it showed up 3 times.
+- **Place:** the model's output, from `create_fit_card`'s prompt
+  (`tools.py:306` and `311`).
+- **Mechanism:** the prompt gives the price as "for $18" and asks to "Mention
+  … the price ($18)", but it never says to write it that way. At
+  `TEMPERATURE` 0.9, in the casual voice the prompt asks for, the model
+  sometimes spells it out.
+  - Across all 15 cards in the before run, 3 did: "eighteen bucks",
+    "forty four dollars" and "forty-two bucks".
+  - Only the first was in a criterion 4 try. The other two were in criterion
+    3 and the diagnostic, which don't score the card.
+  - It's also the same $18 tee whose unit 3 cards said "eighteen dollars" and
+    "18 dollars".
+
+**The pattern.** Four of the seven misses are one cause in one place: the
+model call, with no retry. Two are one cause in `search_listings`, and one is
+the prompt. Criterion 3, the session handoff, held 5 of 5 even in the runs
+where the model failed afterwards. So the plain-code parts of the agent did
+what the criteria asked, and every miss is at an edge: the service, the data
+matching, or the model's wording.
+
+**The two criteria I met.** Neither target can go higher than 5 of 5, but
+each one tests less than it could.
+- **Criterion 3** checks only the half of the handoff that is plain code. A
+  tighter version: the same listing is also the input to `create_fit_card`,
+  and its fit card names that listing's price. Tries 1 and 4 show why that
+  matters: the run can fail after the handoff, and criterion 3 can't see it.
+- **Criterion 5** only tests a dead key, which fails the same way every time.
+  The failure that actually hurt this run was a passing one. A tighter
+  version: "when the service fails once on a model call, the run still
+  completes, 5 of 5". Today that would fail, because nothing retries.
 
 ---
 
