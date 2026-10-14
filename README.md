@@ -1437,6 +1437,83 @@ change after the measured runs wouldn't be measured.
     asking what item you want.
 
 
+---
+
+## Unit 4 Stretch Features
+
+Declared here **before any of them is built**. Each one gets its own commit
+after this one. Once it's built, this section will say what it changed and
+show the run where it happened. They're built in the order listed: the
+second improvement comes first, so its run log measures that one change and
+nothing else.
+
+### 1. A second measured improvement: retry a passing model error
+
+- **What it fixes:** diagnosis 1.
+  - `generate()` retries only rate-limit errors. So a `503 UNAVAILABLE`
+    ("This model is currently experiencing high demand… Please try again
+    later") ends the run on the first attempt.
+  - That caused 4 of the 7 misses in the before run, and hit 11 of the 20
+    runs that reached the model in the after run.
+- **The change:** in `generate.py::generate`:
+  - Treat temporary server errors (503 UNAVAILABLE, and its relatives 500
+    INTERNAL and 504 DEADLINE_EXCEEDED) like a rate limit. Wait, try again,
+    and say so on screen, using the same attempts and backoff the 429 retry
+    already uses.
+  - If every attempt fails, raise `ModelUnavailable` as before, so the
+    handler's message still shows.
+  - A rejected key (400) or an unknown model name (404) still fails at once,
+    so criterion 5 is unaffected.
+- **How it will be measured:** `python run_eval.py --label second`.
+  - A third run log in the same table format, compared row by row with Run
+    Log — After.
+  - The console's retry lines show whether the retry fired at all. If the
+    service behaves during that run, the run can't show the retry working,
+    and I'll say so.
+- **Status:** not built yet.
+
+### 2. A second tool on MCP: `compare_price`
+
+- **What:** `mcp_server.py` registers `compare_price(item: dict) -> dict`
+  next to `search_listings`.
+  - Its description will be written for someone who can't see the code:
+    prices in US dollars, the ±15% band, and the "no comparison" empty case.
+  - `run_agent`'s price step calls it through `mcp_client.call_tool`, and so
+    does `_better_deal`, which uses it to choose whether to switch.
+  - `switch_line` only formats a line for the screen, so it keeps calling it
+    directly.
+- **Why this tool:** it makes no model call. A model tool behind MCP would
+  run in a separate process that never sees `run_eval.py`'s cache-off switch
+  or criterion 5's broken key. That's Moment 5 under How I Used AI.
+- **How it will be shown:**
+  - A check that the MCP result equals the direct result for all 40
+    listings.
+  - A `--trace` run with both MCP calls visible: `search_listings (via MCP)`
+    and `compare_price (via MCP)`.
+- **Status:** not built yet.
+
+### 3. Retry an empty search without the size
+
+- **What:** when a search with a size comes back empty, the loop searches
+  once more without the size.
+  - If that finds something, the run goes on with it and says what it
+    dropped, for example "Nothing came in size 11, so I searched again
+    without the size."
+  - If it still finds nothing, the run stops with the same message as
+    before.
+  - It retries once at most, and only when a size was given.
+- **Where:** `agent.py::run_agent`. The search step hands off to a new
+  `retry` step, the session gets a `dropped` field, and `app.py` prints the
+  line.
+- **How it will be shown:** `python app.py ask 'platform sneakers size 11'
+  --trace`. The trace will show the second `search_listings (via MCP)` call
+  and a note naming the dropped size.
+- **What it will change:** criterion 2's `platform sneakers size 11` try
+  would no longer stop. Instead it would style the US 8 pair, and say so.
+  That trade is the point of the feature. All three run logs above are
+  recorded before it exists.
+- **Status:** not built yet.
+
 <!-- ═════════════════════════════════════════════════════════════════════
 
      SUBMISSION CHECKLIST — unit 3
