@@ -66,8 +66,8 @@ price.
 ### `search_listings`
 
 - **What it does:** Filters the 40 listings in `data/listings.json` by price
-  ceiling and size, then ranks what's left by how many of the description's
-  keywords each one contains. Since unit 4 it's offered over MCP by
+  ceiling and size, keeps only the ones that contain every keyword in the
+  description, and ranks them. Since unit 4 it's offered over MCP by
   `mcp_server.py`, and the agent calls it through `mcp_client.call_tool`.
 - **Inputs:**
   - `description` (str): the item words, e.g. `"vintage graphic tee"`.
@@ -90,14 +90,19 @@ price.
     - `small`, `medium`, `large`, and `extra large` count as `S`, `M`, `L`,
       and `XL`.
     - A `One Size` listing matches any size.
-  - *How results are ranked:* each listing scores one point per description
-    keyword found in its title, description, category, style tags, colors,
-    or brand. Keywords in the title count twice. Common words like "a" and
-    "for" are dropped, and a trailing "s" is ignored, so `tees` matches
-    `tee`. Ties go to the cheaper listing.
+  - *Which listings match (changed in unit 4):* a listing has to contain
+    every description keyword somewhere in its title, description,
+    category, style tags, colors, or brand.
+    - Common words like "a" and "for" are dropped, and a trailing "s" is
+      ignored, so `tees` matches `tee`.
+    - Until unit 4's improvement, one shared keyword was enough. See The
+      Improvement for what that got wrong.
+  - *How results are ranked:* one point per keyword, and keywords in the
+    title count twice, so listings with more of the words in their title
+    come first. Ties go to the cheaper listing.
 - **When it has nothing:** an empty list `[]`, never `None` and never an
-  exception. Listings that score 0 are dropped, so an empty or all-filler
-  `description` also returns `[]`.
+  exception. A listing missing any keyword is dropped, so an empty or
+  all-filler `description` also returns `[]`.
 
 ### `suggest_outfit`
 
@@ -258,6 +263,11 @@ Wear the Y2K Baby Tee — Butterfly Print tucked into wide-leg khaki trousers, a
 
 `search_listings`: a match, then the empty case
 
+(Recorded in unit 3. Since unit 4's strict matching, the first command
+returns only the 4 listings that contain both "graphic" and "tee": lst_006,
+lst_002, lst_033 and lst_017. The hoodie, the crewneck and the cargo pants
+are gone.)
+
 ```
 $ python -c "from tools import search_listings; print([(x['id'], x['title'], x['price'], x['size']) for x in search_listings('graphic tee', max_price=30)])"
 [('lst_006', 'Graphic Tee — 2003 Tour Bootleg Style', 24.0, 'L'), ('lst_002', 'Y2K Baby Tee — Butterfly Print', 18.0, 'S/M'), ('lst_033', 'Vintage Band Tee — Faded Grey', 19.0, 'L'), ('lst_017', 'Mesh Long-Sleeve Top — Black', 15.0, 'S/M'), ('lst_015', 'Vintage Graphic Hoodie — Faded Black', 26.0, 'L'), ('lst_012', 'Oversized Crewneck Sweatshirt — Vintage Navy', 20.0, 'XL (fits oversized)'), ('lst_011', 'Low-Rise Cargo Pants — Khaki', 27.0, 'W29')]
@@ -414,11 +424,17 @@ where it happened.
   - `_better_deal` also prices each candidate with `compare_price`, and those
     checks aren't added to `steps`. A switched run makes three
     `compare_price` calls but records two.
-  - **Known limit:** matching is loose (see Unit 4 notes), so a switch can
-    contradict a word you typed. For example, `'blue jeans'` switches to the
-    black jeans. If matching gets stricter in Unit 4, `'velvet blazer'`
-    stops switching (`'graphic tee'` still would), so this run log will need
-    re-capturing.
+  - **Known limit (unit 3):** matching was loose, so a switch could
+    contradict a word you typed. For example, `'blue jeans'` switched to the
+    black jeans.
+  - **Update after unit 4's strict matching** (see The Improvement):
+    - That limit is fixed: `'blue jeans'` now keeps the dark-wash carpenter
+      jeans.
+    - As predicted, `'velvet blazer'` stopped switching, because the linen
+      blazer doesn't say "velvet". The run log below was recorded before that
+      change.
+    - `'graphic tee'` and `"vintage levi's jeans"` still switch. The Loop
+      Trace has a current switched run.
   - None of the example queries switch, because their picks are below or
     about typical. Overpriced picks with no close match, such as
     `'graphic hoodie'` or `'leather bomber'`, are kept.
@@ -825,6 +841,20 @@ criterion 1 tries 1, 3 and 4, and criterion 4 try 3.
   a gap of its own.
   - Criterion 1's reason predicted this miss: "a `ModelUnavailable` error can
     occur that nothing catches". It's caught now, but caught means stopped.
+- **Update, Milestone 5: now I know which error it was.** During the after
+  run the service failed again, more often: 11 of 20 runs. A probe during
+  that stretch caught the raw exception twice in six calls. The probe was a
+  scratch script that wrapped `generate._explain`; no repo code changed.
+
+  ```
+  google.genai.errors.ServerError: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+  ```
+
+  - It's a 503, which `generate()`'s rate-limit check doesn't recognize, so
+    it never retries it, even though the service itself says to "try again
+    later".
+  - The calls that worked in that window took 28–42 seconds, which is why
+    the after run took 24 minutes.
 
 **2. Search counts a one-word overlap as a match, so the empty branch never
 fires.** This caused 2 misses: criterion 2 tries 4 and 5.
@@ -898,6 +928,12 @@ tool returns. Each step has the tool, what went in (`in:`), what came back
 - Steps are only recorded once `trace.start_trace()` has run. `ask --trace`
   starts it, and so does `run_eval.py` on every try. A plain `ask` prints no
   trace.
+- The happy-path and second-branch traces below were re-recorded after
+  Milestone 5's strict matching.
+  - The happy path's search now returns 1 item instead of 10, and it's the
+    same item.
+  - `velvet blazer` no longer switches, so `vintage levi's jeans` shows the
+    second branch instead.
 
 **Happy path** (four steps, with the MCP call first)
 
@@ -905,7 +941,7 @@ tool returns. Each step has the tool, what went in (`in:`), what came back
 $ python app.py ask 'vintage graphic tee under $30, size M' --trace
 [1] search_listings (via MCP)
       in:  description='vintage graphic tee', size='M', max_price=30.0
-      out: 10 items: Y2K Baby Tee — Butterfly Print, Mesh Long-Sleeve Top — Black, Vintage Polo Shirt — Forest Green … +7 more
+      out: 1 items: Y2K Baby Tee — Butterfly Print
       →    not empty: selected_item = the first result
 [2] compare_price
       in:  Y2K Baby Tee — Butterfly Print ($18.0, depop)
@@ -956,25 +992,25 @@ $ python app.py ask 'designer ballgown size XXS under $5' --trace
 `compare_price` runs twice)
 
 ```
-$ python app.py ask 'velvet blazer' --trace
+$ python app.py ask "vintage levi's jeans" --trace
 [1] search_listings (via MCP)
-      in:  description='velvet blazer', size=None, max_price=None
-      out: 2 items: Velvet Blazer — Emerald Green, Vintage Linen Blazer — Cream
+      in:  description="vintage levi's jeans", size=None, max_price=None
+      out: 2 items: Vintage Levi's 501 Jeans — Medium Wash, Straight Leg Black Jeans — Faded
       →    not empty: selected_item = the first result
 [2] compare_price
-      in:  Velvet Blazer — Emerald Green ($52.0, depop)
-      out: {'price': 52.0, 'typical_price': 40.0, 'verdict': 'above typical', 'compared_with': 7}
-      →    above typical: switch to Vintage Linen Blazer — Cream, then check its price
+      in:  Vintage Levi's 501 Jeans — Medium Wash ($38.0, depop)
+      out: {'price': 38.0, 'typical_price': 30.0, 'verdict': 'above typical', 'compared_with': 9}
+      →    above typical: switch to Straight Leg Black Jeans — Faded, then check its price
 [3] compare_price
-      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
-      out: {'price': 38.0, 'typical_price': 42.0, 'verdict': 'about typical', 'compared_with': 7}
+      in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+      out: {'price': 30.0, 'typical_price': 30.0, 'verdict': 'about typical', 'compared_with': 9}
 [4] suggest_outfit
-      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
-      out: Outfit 1: High-Low Contrast Pair the vintage linen blazer with the white ribbed tank top tucked into the baggy…
+      in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+      out: Outfit 1: Grunge Monochrome  Pair the straight leg black jeans — faded with the white ribbed tank top tucked i…
       →    wardrobe: 10 pieces
 [5] create_fit_card
-      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
-      out: Channelling the ultimate coastal grandma energy with this cream linen blazer. Scored it on thredUp for just $3…
+      in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+      out: Total 90s indie sleaze vibes with these faded black Levi's straight legs. Scored them on thredUp for just $30 …
       →    with the outfit from suggest_outfit
 ```
 
@@ -1124,25 +1160,102 @@ Styling tip: Because the jacket is cropped and light wash, balance your proporti
 
      `python run_eval.py --label after` -->
 
-**What I changed:**
+**What I changed:** strict matching in `tools.py::search_listings`.
+- A listing is now kept only if it contains **every** description keyword,
+  where before it took just one. The plural and stopword rules didn't
+  change.
+- In code it's one condition, `if not wanted <= _listing_words(listing)[1]:
+  continue`, plus a small helper so the filter and the score read the same
+  words.
+- Nothing else in the agent changed. The MCP tool's description in
+  `mcp_server.py` and the Tool Inventory now say "every word", because the
+  published contract has to match what the tool does.
 
-**Which failure it was meant to fix:**
+**Which failure it was meant to fix:** diagnosis 2, criterion 2's tries 4
+and 5.
+- "leather jacket under $40" styled a leather belt, and "red cowboy boots"
+  styled a red crewneck. One shared word was enough to count as a match, so
+  the loop's empty-search branch never fired.
+- **Why this one first.** Diagnosis 1, the model errors, caused more misses.
+  But those errors came and went, and no single run can show a fix for them
+  working on demand. Search is plain code, so one run can show for certain
+  whether this change worked. The retry for diagnosis 1 is a stretch item
+  (see Unit 4 Stretch Features).
+- **Checked before running anything:** I applied the rule to all 25 scenario
+  queries. Only the two misses changed (both now stop), and the other 23
+  kept the same pick.
 
 ### Run Log — After
 
+`python run_eval.py --label after` wrote
+[`results/run_2026-10-13_2156_after.md`](results/run_2026-10-13_2156_after.md).
+It used the same scenarios, the same five queries per row, and the same
+settings (cache off, `TEMPERATURE` 0.9), and made 40 model calls.
+
 | Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |  |  |
+| 1. A matching query completes all three tools | 4 of 5 | FAIL | FAIL | FAIL | FAIL | PASS | MISSED (1/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. The found item reaches `suggest_outfit` | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. Fit cards name price and platform, and vary | 5 of 5 | FAIL | FAIL | FAIL | FAIL | PASS | MISSED (1/5) |
+| 5. A down model gets a readable message | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
 
-**Did it help, and how do I know:**
+Why each try failed:
+- **Criterion 1:** tries 1–4 failed because the model call failed, three
+  times in `create_fit_card` and once in `suggest_outfit`.
+- **Criterion 4:**
+  - Tries 2 and 4 failed because the model call failed, so there was no card.
+  - Tries 1 and 3 spelled out the price: "eighteen bucks" and "forty bucks".
+- **The empty-wardrobe diagnostic** completed 3 of 5. The other two were cut
+  off by the same model failure.
 
-<!-- If it made things worse, say that. Honestly reported, that earns full
-     credit and is more interesting than one that worked. -->
+**Before and after, side by side**
 
+| Criterion | Target | Before | After | What moved it |
+|---|---|---|---|---|
+| 1. A matching query completes all three tools | 4 of 5 | MISSED (2/5) | MISSED (1/5) | Model failures went from 3 to 4. Not this change |
+| 2. An impossible query stops before the second tool | 5 of 5 | MISSED (3/5) | **MET (5/5)** | **This change**: both weak-spot queries now stop |
+| 3. The found item reaches `suggest_outfit` | 5 of 5 | MET (5/5) | MET (5/5) | No change |
+| 4. Fit cards name price and platform, and vary | 5 of 5 | MISSED (3/5) | MISSED (1/5) | Model failures went from 1 to 2, and spelled-out prices from 1 to 2. Not this change |
+| 5. A down model gets a readable message | 5 of 5 | MET (5/5) | MET (5/5) | No change |
+
+**Did it help, and how I know:**
+
+- **Yes, for the failure it was meant to fix.**
+  - Criterion 2 went from 3/5 to 5/5. Both former misses now stop at
+    `search_listings` and name what to change. The first now says "No
+    listings matched 'leather jacket' under $40. The closest match, 90s
+    Leather Bomber — Black, is $75: raise your max price to at least $75…".
+    The second says "Nothing in the listings matches 'red cowboy boots' at
+    any size or price…".
+  - This isn't luck. Search is plain code with no model in it, so these
+    queries stop the same way every time, and the check script runs them
+    directly too.
+  - A bonus from the same fix: the "platform sneakers size 11" message now
+    offers only US 8. Before, it also offered US 7 and US 9, which were the
+    Mary Janes and the canvas sneakers that loose matching had let in.
+- **Criteria 1 and 4 got worse, and not because of this change.**
+  - The change only touches `search_listings`, and every criterion 1, 3, 4
+    and 5 query picked the same listing as in the before run. I checked that
+    before running, and both run logs show it. The one exception is
+    `velvet blazer`, covered below.
+  - What changed was the model service. This time 11 of the 20 runs that
+    reached the model failed, against 7 of 22 before. The run took 24
+    minutes instead of 6, because even the calls that worked were slow.
+  - A probe during the slowdown finally caught the raw error (see the
+    update under diagnosis 1): `503 UNAVAILABLE … This model is currently
+    experiencing high demand.`
+  - Criterion 4 also had two cards spell out the price, which is diagnosis 3.
+    This change doesn't touch that.
+- **What it cost.** Strict matching can now stop on a query a person would
+  call a match.
+  - "comfy denim jacket" finds nothing, because no listing says "comfy",
+    even though a denim jacket exists.
+  - `velvet blazer` now finds only the velvet blazer, since the linen blazer
+    doesn't say "velvet". So the second branch no longer switches for it,
+    and criterion 3's try 1 now tests a plain handoff instead of a switched
+    one. `vintage levi's jeans` still switches (see the Loop Trace).
+  - Both points are in What's Still Broken.
 
 
 ---

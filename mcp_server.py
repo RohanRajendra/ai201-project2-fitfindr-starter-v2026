@@ -39,8 +39,10 @@ def search_listings(
 
     Inputs:
       description (string, required): the item words, e.g. "vintage graphic
-        tee". Listings are ranked by how many of these words they contain;
-        words in the title count twice. A listing sharing none is left out.
+        tee". Only listings that contain every one of these words come back
+        (plurals fold, so "tees" finds "tee"; words like "a" and "for" are
+        ignored). Listings with more of the words in their title rank first;
+        ties go to the cheaper one.
       size (string or null): e.g. "M", "8", "W30". Null skips the size filter.
         Sizes match as whole tokens, ignoring case: "M" matches "S/M", "8"
         matches "US 8", "W30" matches "W30 L30", "L" never matches "XL". A
