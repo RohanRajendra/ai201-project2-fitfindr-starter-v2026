@@ -67,7 +67,8 @@ price.
 
 - **What it does:** Filters the 40 listings in `data/listings.json` by price
   ceiling and size, then ranks what's left by how many of the description's
-  keywords each one contains.
+  keywords each one contains. Since unit 4 it's offered over MCP by
+  `mcp_server.py`, and the agent calls it through `mcp_client.call_tool`.
 - **Inputs:**
   - `description` (str): the item words, e.g. `"vintage graphic tee"`.
   - `size` (str or None): e.g. `"M"`, `"8"`, `"W30"`. `None` skips size
@@ -609,10 +610,32 @@ that produced it:
 
 ```
 
-**On the MCP move:** <!-- what changed in your code, and whether anything
-behaved differently afterwards. If the rewire didn't work, say exactly where it
-broke — the error text and the last thing that worked. That earns the point in
-full. -->
+**On the MCP move:**
+
+- **What changed in the code:**
+  - `mcp_server.py` registers `search_listings`. Its description is written
+    for an agent that can't see the code, so it names the units (US dollars,
+    inclusive) and the types, and says that no match returns an empty list.
+    The input names and types are the ones in the Tool Inventory.
+  - In `agent.py::run_agent`, the search step calls
+    `call_tool("search_listings", {...})` instead of the function.
+  - Each call starts the server, asks, and stops it again, which adds about
+    0.8 seconds to a run (a direct call takes about 1 ms).
+  - `_no_results_message` still calls `search_listings` directly. It only
+    words the advice in the "nothing found" message and isn't a loop step.
+- **Did anything behave differently afterwards?** No.
+  - A check compared the MCP result with a direct call on 10 inputs: with and
+    without a size and a price, an empty description, and an impossible
+    query. All 10 matched exactly, and the value types matched too, so prices
+    stayed floats.
+  - `python app.py ask 'vintage graphic tee under $30'` found the same Vintage
+    Band Tee as before.
+- **One difference from what the starter documents:** before the tool was
+  registered, the client's message "The server doesn't offer a tool called…"
+  never reached the screen. It came out as "unhandled errors in a TaskGroup
+  (1 sub-exception)" instead, because the error is raised inside an async
+  task group and gets wrapped on the way out. A misspelled tool name, such
+  as `call_tool('search_listing', ...)`, gets the same unhelpful message.
 
 
 
