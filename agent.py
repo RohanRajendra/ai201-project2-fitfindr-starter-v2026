@@ -208,6 +208,34 @@ def _better_deal(session: dict) -> dict | None:
     return None
 
 
+_MODEL_DOWN_NOTE = "the model couldn't be reached: stop with a message"
+
+
+def _model_down_message(item: dict) -> str:
+    """
+    What the user reads when generate() raises ModelUnavailable (a bad key,
+    no network): what broke, what still worked, and what to try. No exception
+    name and no status code, because neither tells a user what to do.
+    """
+    return (f"Found {item['title']} for {_price(item['price'])} on {item['platform']}, but "
+            "the styling service is unavailable right now, so there's no outfit or fit "
+            "card this time. Try again in a few minutes. If it keeps failing, check that "
+            "you're online and that GEMINI_API_KEY in the project's .env file is correct, "
+            "or create a new key at aistudio.google.com.")
+
+
+def _search_inputs(parsed: dict) -> str:
+    """The search step's inputs for the trace, spelled out: a dict would print as just its keys."""
+    return ", ".join(f"{key}={parsed[key]!r}" for key in ("description", "size", "max_price"))
+
+
+def _wardrobe_note(wardrobe: dict) -> str:
+    count = len((wardrobe or {}).get("items") or [])
+    if not count:
+        return "empty wardrobe: general styling advice"
+    return f"wardrobe: {count} piece{'' if count == 1 else 's'}"
+
+
 # ── planning loop ─────────────────────────────────────────────────────────────
 
 def run_agent(query: str, wardrobe: dict) -> dict:
@@ -237,18 +265,25 @@ def run_agent(query: str, wardrobe: dict) -> dict:
       session["passed_over"], and check the new pick's price. Otherwise go on
       to suggest_outfit, then create_fit_card.
 
+      If either model tool can't reach the model (ModelUnavailable: a bad
+      key, no network), put a message in session["error"] saying the styling
+      service is unavailable and to try again, and stop.
+
     Each pass of the loop runs one step, reads its inputs back out of the
     session, writes its result into the session, and picks the next step.
     trace.check_iterations() guards every pass.
 
     ─────────────────────────────────────────────────────────────────────────
-    IN UNIT 4 you come back and add two things:
+    Unit 4 added three things:
 
-      • Trace calls. One per step. `trace.step("search_listings", inputs=...,
-        returned=...)` — see trace.py. Your README needs the output.
+      • search_listings goes through MCP (mcp_server.py, via call_tool).
 
-      • A handler for ModelUnavailable, so a bad key produces a message rather
-        than a stack trace. The import is already at the top of this file.
+      • One trace.step() per tool call, after it returns: the tool, what went
+        in, what came back, and a note on the branch taken. They print only
+        once trace.start_trace() has run — `ask --trace`, and run_eval.py.
+
+      • The ModelUnavailable handler above, so a bad key gets a message rather
+        than a stack trace.
     """
     session = new_session(query, wardrobe)
     session["parsed"] = parse_query(query)
@@ -271,36 +306,49 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             })
             if not session["search_results"]:  # the branch: stop, say what to change
                 session["error"] = _no_results_message(parsed)
-                step = "done"
+                note, step = "empty: stop here, suggest_outfit is never called", "done"
             else:
                 session["selected_item"] = session["search_results"][0]
-                step = "price"
+                note, step = "not empty: selected_item = the first result", "price"
+            trace.step("search_listings (via MCP)", inputs=_search_inputs(parsed),
+                       returned=session["search_results"], note=note)
 
         elif step == "price":
+            item = session["selected_item"]
             session["steps"].append("compare_price")
-            session["price_check"] = compare_price(session["selected_item"])
-            better = None
-            if session["price_check"]["verdict"] == "above typical" and not session["passed_over"]:
-                better = _better_deal(session)
+            session["price_check"] = compare_price(item)
+            above = session["price_check"]["verdict"] == "above typical"
+            better = _better_deal(session) if above and not session["passed_over"] else None
             if better:  # the second branch: switch, then check the new pick's price
-                session["passed_over"] = session["selected_item"]
+                session["passed_over"] = item
                 session["selected_item"] = better
-                step = "price"
+                note, step = f"above typical: switch to {better['title']}, then check its price", "price"
             else:
+                note = "above typical, but no cheaper close match: keep it" if above else ""
                 step = "suggest"
+            trace.step("compare_price", inputs=item, returned=str(session["price_check"]), note=note)
 
         elif step == "suggest":
+            item = session["selected_item"]
             session["steps"].append("suggest_outfit")
-            session["outfit_suggestion"] = suggest_outfit(
-                session["selected_item"], session["wardrobe"]
-            )
-            step = "card"
+            try:
+                session["outfit_suggestion"] = suggest_outfit(item, session["wardrobe"])
+                note, step = _wardrobe_note(session["wardrobe"]), "card"
+            except ModelUnavailable:  # a bad key or no network: a message, not a stack trace
+                session["error"] = _model_down_message(item)
+                note, step = _MODEL_DOWN_NOTE, "done"
+            trace.step("suggest_outfit", inputs=item, returned=session["outfit_suggestion"], note=note)
 
         elif step == "card":
+            item = session["selected_item"]
             session["steps"].append("create_fit_card")
-            session["fit_card"] = create_fit_card(
-                session["outfit_suggestion"], session["selected_item"]
-            )
+            try:
+                session["fit_card"] = create_fit_card(session["outfit_suggestion"], item)
+                note = "with the outfit from suggest_outfit"
+            except ModelUnavailable:
+                session["error"] = _model_down_message(item)
+                note = _MODEL_DOWN_NOTE
+            trace.step("create_fit_card", inputs=item, returned=session["fit_card"], note=note)
             step = "done"
 
     return session

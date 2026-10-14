@@ -151,8 +151,9 @@ price.
     of `""`.
 
 Both model tools go through `generate()`. If the model can't be reached at
-all, that raises `ModelUnavailable`, which the loop doesn't catch yet. That's
-unit 4.
+all, that raises `ModelUnavailable`. The tools let it through, and since unit
+4 `run_agent` catches it and stops with a readable message (see Planning
+Loop).
 
 ---
 
@@ -181,6 +182,11 @@ unit 4.
   title, not above typical itself), the loop switches to it, keeps the
   original in `session["passed_over"]`, and checks the new pick's price.
   Otherwise it goes on to `suggest_outfit`, then `create_fit_card`.
+- **If the model can't be reached** (unit 4): when `suggest_outfit` or
+  `create_fit_card` raises `ModelUnavailable` (a bad key, or no network), the
+  loop puts a message in `session["error"]` and stops. The message says the
+  styling service is unavailable and to try again. No outfit or fit card is
+  shown.
 
 **Where it lives:** `agent.py::run_agent`. It's a `while` loop over named
 steps (search → price → suggest → card → done), and every pass calls
@@ -211,8 +217,9 @@ session, not from a local variable. The fields fill in this order:
 `steps` lists the tool each loop step called, in order:
 `["search_listings", "compare_price", "suggest_outfit", "create_fit_card"]` on
 a full run, with `compare_price` twice when the second branch switched (the old
-pick, then the new one), and
-`["search_listings"]` when the branch stops it. `error` is set only when the
+pick, then the new one). It's
+`["search_listings"]` when the branch stops it. When the model can't be
+reached, it ends at the model tool that failed. `error` is set only when the
 run stops early.
 
 ---
@@ -598,17 +605,201 @@ that produced it:
      the same length, your branch isn't working — and this is the fastest way
      anyone will ever find that out. -->
 
-**Happy path**
+`agent.py::run_agent` writes one `trace.step()` for each tool call, after the
+tool returns. Each step has the tool, what went in (`in:`), what came back
+(`out:`), and a note on the branch it took (`→`).
+- The search step is named `search_listings (via MCP)`, because that call
+  goes through `mcp_client.call_tool` to `mcp_server.py`.
+- Steps are only recorded once `trace.start_trace()` has run. `ask --trace`
+  starts it, and so does `run_eval.py` on every try. A plain `ask` prints no
+  trace.
+
+**Happy path** (four steps, with the MCP call first)
 
 ```
+$ python app.py ask 'vintage graphic tee under $30, size M' --trace
+[1] search_listings (via MCP)
+      in:  description='vintage graphic tee', size='M', max_price=30.0
+      out: 10 items: Y2K Baby Tee — Butterfly Print, Mesh Long-Sleeve Top — Black, Vintage Polo Shirt — Forest Green … +7 more
+      →    not empty: selected_item = the first result
+[2] compare_price
+      in:  Y2K Baby Tee — Butterfly Print ($18.0, depop)
+      out: {'price': 18.0, 'typical_price': 21.5, 'verdict': 'below typical', 'compared_with': 14}
+[3] suggest_outfit
+      in:  Y2K Baby Tee — Butterfly Print ($18.0, depop)
+      out: Outfit 1: Streetwear Contrast Pair the Y2K Baby Tee — Butterfly Print with baggy straight-leg jeans, dark wash…
+      →    wardrobe: 10 pieces
+[4] create_fit_card
+      in:  Y2K Baby Tee — Butterfly Print ($18.0, depop)
+      out: Total soft grunge fairy vibes with this little butterfly tee. Got it on depop for eighteen dollars and I am so…
+      →    with the outfit from suggest_outfit
 
+  Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+  Price:    $18, below the typical $21.50 for tops
+
+  Outfit:   Outfit 1: Streetwear Contrast
+Pair the Y2K Baby Tee — Butterfly Print with baggy straight-leg jeans, dark wash to balance the fitted top. Throw the black cropped zip hoodie on top and finish the look with chunky white sneakers.
+
+Outfit 2: Casual Grunge
+Wear the Y2K Baby Tee — Butterfly Print tucked into wide-leg khaki trousers, accented by the brown leather belt. Layer the vintage black denim jacket over it and anchor the outfit with black combat boots.
+
+  Fit card: Total soft grunge fairy vibes with this little butterfly tee. Got it on depop for eighteen dollars and I am so obsessed with the pastel print. Going to wear it with baggy denim and beat up sneakers all week.
+
+#y2k #thrifthaul #babytee
+
+0 model calls this session, 2 served from cache
 ```
 
-**Empty search**
+This is the same query as the Sample Run, so its outfit and card came from the
+cache.
+
+**Empty search** (one step: the branch stops before `suggest_outfit`)
 
 ```
+$ python app.py ask 'designer ballgown size XXS under $5' --trace
+[1] search_listings (via MCP)
+      in:  description='designer ballgown', size='XXS', max_price=5.0
+      out: [] (empty)
+      →    empty: stop here, suggest_outfit is never called
+
+  Nothing in the listings matches 'designer ballgown' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, nothing is listed under $5 (the cheapest listing is $12), and no listing comes in size XXS.
+
+0 model calls this session
+```
+
+**Second branch** (an overpriced pick switched to a cheaper close match, so
+`compare_price` runs twice)
 
 ```
+$ python app.py ask 'velvet blazer' --trace
+[1] search_listings (via MCP)
+      in:  description='velvet blazer', size=None, max_price=None
+      out: 2 items: Velvet Blazer — Emerald Green, Vintage Linen Blazer — Cream
+      →    not empty: selected_item = the first result
+[2] compare_price
+      in:  Velvet Blazer — Emerald Green ($52.0, depop)
+      out: {'price': 52.0, 'typical_price': 40.0, 'verdict': 'above typical', 'compared_with': 7}
+      →    above typical: switch to Vintage Linen Blazer — Cream, then check its price
+[3] compare_price
+      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
+      out: {'price': 38.0, 'typical_price': 42.0, 'verdict': 'about typical', 'compared_with': 7}
+[4] suggest_outfit
+      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
+      out: Outfit 1: High-Low Contrast Pair the vintage linen blazer with the white ribbed tank top tucked into the baggy…
+      →    wardrobe: 10 pieces
+[5] create_fit_card
+      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
+      out: Channelling the ultimate coastal grandma energy with this cream linen blazer. Scored it on thredUp for just $3…
+      →    with the outfit from suggest_outfit
+```
+
+### Failure modes, triggered on purpose
+
+All three were triggered on purpose, one at a time. The model-down one was the
+only one that crashed, so it's the only one that got a new handler.
+
+**1. Empty search.** A query the data can't match. It stops before
+`suggest_outfit` (trace above) and names what to change. This was handled in
+unit 3, so nothing changed.
+
+```
+$ python app.py ask 'designer ballgown size XXS under $5'
+
+  Nothing in the listings matches 'designer ballgown' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, nothing is listed under $5 (the cheapest listing is $12), and no listing comes in size XXS.
+
+0 model calls this session
+```
+
+**2. Empty wardrobe.** `suggest_outfit` gets `{"items": []}`. It returns
+general advice that doesn't claim you own anything: no crash, and not an empty
+string. This was also handled in unit 3, so nothing changed.
+
+```
+$ python app.py ask 'denim jacket under $50' --empty-wardrobe
+(running with an empty wardrobe)
+
+  Found:    Denim Jacket — Light Wash, Cropped — $42.0 on poshmark
+  Price:    $42, about the typical $40 for outerwear
+
+  Outfit:   Outfit 1: Layer the cropped Wrangler jacket over a black ribbed cotton midi dress and white canvas low-top sneakers for an easy, casual weekend look.
+
+Outfit 2: Pair it with high-waisted pleated wide-leg trousers in beige, a fitted white baby tee, and chunky retro running shoes to lean into a streetwear vibe.
+
+Styling tip: Because the jacket is cropped and light wash, balance your proportions by pairing it with high-waisted bottoms to elongate your silhouette and define your waist.
+
+  Fit card: Weekend indie sleaze energy is officially back. Snagged this cropped Wrangler denim jacket on Poshmark for $42 and it's already my new go-to layer. Honestly obsessed with how the light wash goes with literally everything in my closet.
+
+#thriftedfashion #wrangler #streetwear
+
+2 model calls this session, 458 prompt + 169 output tokens
+```
+
+**3. Model unavailable.**
+- **How I triggered it:** one character of `GEMINI_API_KEY` was changed in
+  memory after `config.py` loaded `.env`, so the file itself was never
+  edited. The cache was off (`AI201_CACHE=0`), and the query was one I hadn't
+  run before. The trigger was a small script:
+
+  ```python
+  import os, sys
+  import config                                    # loads .env into os.environ
+  key = os.environ["GEMINI_API_KEY"]
+  os.environ["GEMINI_API_KEY"] = key[:-1] + ("x" if key[-1] != "x" else "y")
+  import app
+  sys.argv = ["app.py", "ask", "corduroy wide-leg pants under $40", "--trace"]
+  app.main()
+  ```
+
+- **Before the handler, it crashed:**
+  - `ModelUnavailable` came up out of `run_agent`.
+  - `app.py`'s catch-all printed the exception's name and exited with status 1.
+  - The search had worked, but nothing on screen said what it found.
+
+  ```
+  ModelUnavailable: The model rejected your API key. Check GEMINI_API_KEY in your .env file, or create a fresh key at aistudio.google.com.
+
+  1 model calls this session
+  ```
+
+- **The handler:**
+  - `run_agent` catches `ModelUnavailable` around `suggest_outfit` and
+    `create_fit_card`.
+  - It puts a message in `session["error"]` and stops.
+  - The message says what broke, what still worked, and what to try. It has
+    no exception name and no status code.
+- **After:**
+
+  ```
+  [1] search_listings (via MCP)
+        in:  description='corduroy wide-leg pants', size=None, max_price=40.0
+        out: 5 items: Corduroy Wide-Leg Pants — Rust, Wide-Leg Linen Trousers — Natural, Low-Rise Cargo Pants — Khaki … +2 more
+        →    not empty: selected_item = the first result
+  [2] compare_price
+        in:  Corduroy Wide-Leg Pants — Rust ($32.0, depop)
+        out: {'price': 32.0, 'typical_price': 30.0, 'verdict': 'about typical', 'compared_with': 9}
+  [3] suggest_outfit
+        in:  Corduroy Wide-Leg Pants — Rust ($32.0, depop)
+        →    the model couldn't be reached: stop with a message
+
+    Found Corduroy Wide-Leg Pants — Rust for $32 on depop, but the styling service is unavailable right now, so there's no outfit or fit card this time. Try again in a few minutes. If it keeps failing, check that you're online and that GEMINI_API_KEY in the project's .env file is correct, or create a new key at aistudio.google.com.
+
+  1 model calls this session
+  ```
+
+- **Checked by a reader with no context.** As the milestone suggests, I gave
+  all three messages to a fresh Claude with the course prompt ("tell me what I
+  would try next as a user who can't see the code… Don't rewrite them for
+  me").
+  - None of the three left it with nothing to try.
+  - Message 1: it would search "dress under $20" with no size.
+  - Message 2: it would save wardrobe pieces.
+  - Message 3: it would retry in a few minutes, then check the connection and
+    the key.
+  - The one gap was in message 3. The first version said to check
+    `GEMINI_API_KEY` in your .env file but not where that file is, or how to
+    get a new key. So it now says "the project's .env file" and points to
+    aistudio.google.com, which `generate.py`'s own explanation already
+    mentioned. The output above is the re-run after that change.
 
 **On the MCP move:**
 
