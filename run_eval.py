@@ -26,10 +26,21 @@ you would teach you nothing.
 That is expected here, unlike pair 1. If all five tries come back identical
 on a criterion that involves the fit card, check that you're really in test
 mode — caching is what usually explains it.
+
+Two additions for unit 4's criteria:
+
+  • A scenario can give "queries", one per try, instead of one "query" run
+    every time. Criteria 3, 4 and 5 each call for five different queries,
+    so try 1 runs the first, try 2 the second, and so on.
+  • A scenario can say "model": "unreachable". Criterion 5 needs the model
+    down, and model_unreachable() does that for each of its tries: one
+    character of the key changed, in memory, never in .env.
 """
 
 import argparse
+import contextlib
 import datetime as dt
+import os
 import sys
 import traceback
 
@@ -37,8 +48,41 @@ import config
 import scenarios as scenario_module
 
 
-def run_once(scenario, use_trace=True):
-    """One scenario, one try. Returns everything worth recording."""
+def query_for(scenario, attempt):
+    """
+    The query for one try: the scenario's one "query", or its "queries" in
+    order, one per try (they start over if there are more tries than queries).
+    """
+    queries = scenario.get("queries")
+    return queries[(attempt - 1) % len(queries)] if queries else scenario["query"]
+
+
+@contextlib.contextmanager
+def model_unreachable():
+    """
+    Make the model unreachable for one try, the way criterion 5 says to: one
+    character of GEMINI_API_KEY changed. This changes the copy config.py
+    loaded from .env, in memory only, and puts it back afterwards, even if the
+    try crashes, so .env is never edited.
+
+    generate.py builds its client once and reuses it, so the client is
+    dropped on the way in (or the old key would keep working) and on the way
+    out (or the broken one would).
+    """
+    import generate
+
+    real = os.environ.get("GEMINI_API_KEY", "")
+    os.environ["GEMINI_API_KEY"] = real[:-1] + ("x" if real[-1:] != "x" else "y")
+    generate._client = None
+    try:
+        yield
+    finally:
+        os.environ["GEMINI_API_KEY"] = real
+        generate._client = None
+
+
+def run_once(scenario, query, use_trace=True):
+    """One scenario, one try, on one query. Returns everything worth recording."""
     from agent import run_agent
     from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
     import trace as trace_module
@@ -50,9 +94,11 @@ def run_once(scenario, use_trace=True):
     if use_trace:
         trace_module.start_trace()
 
-    record = {"error": None, "session": None, "trace": "", "crashed": None}
+    unreachable = scenario.get("model") == "unreachable"
+    record = {"query": query, "error": None, "session": None, "trace": "", "crashed": None}
     try:
-        record["session"] = run_agent(scenario["query"], wardrobe)
+        with model_unreachable() if unreachable else contextlib.nullcontext():
+            record["session"] = run_agent(query, wardrobe)
     except Exception as exc:  # noqa: BLE001 — a crash is a result worth logging
         record["crashed"] = f"{type(exc).__name__}: {exc}"
         record["traceback"] = traceback.format_exc()
@@ -90,23 +136,27 @@ def main():
 
     rows = []
     for scenario in scenario_module.SCENARIOS:
-        print(f"{scenario['name']}  ({scenario['wardrobe']} wardrobe)")
-        print(f"  query: {scenario['query']}")
+        down = ", model unreachable" if scenario.get("model") == "unreachable" else ""
+        print(f"{scenario['name']}  ({scenario['wardrobe']} wardrobe{down})")
+        if not scenario.get("queries"):
+            print(f"  query: {scenario['query']}")
 
         tries = []
         for attempt in range(1, args.tries + 1):
-            record = run_once(scenario)
+            query = query_for(scenario, attempt)
+            record = run_once(scenario, query)
             tries.append(record)
+            label = f"try {attempt}" + (f" [{query}]" if scenario.get("queries") else "")
 
             if record["crashed"]:
-                print(f"  try {attempt}: CRASHED — {record['crashed']}")
+                print(f"  {label}: CRASHED — {record['crashed']}")
             else:
                 session = record["session"] or {}
                 if session.get("error"):
-                    print(f"  try {attempt}: stopped early — {str(session['error'])[:60]}")
+                    print(f"  {label}: stopped early — {str(session['error'])[:60]}")
                 else:
                     card = (session.get("fit_card") or "")
-                    print(f"  try {attempt}: completed — fit card {len(card)} chars")
+                    print(f"  {label}: completed — fit card {len(card)} chars")
 
         rows.append({"scenario": scenario, "tries": tries})
         print()
@@ -172,12 +222,19 @@ def write_report(rows, args):
 
     for row in rows:
         scenario = row["scenario"]
-        lines += [f"### {scenario['name']}", "",
-                  f"- Query: `{scenario['query']}`",
-                  f"- Wardrobe: {scenario['wardrobe']}", ""]
+        lines += [f"### {scenario['name']}", ""]
+        if scenario.get("queries"):
+            lines.append("- Queries: one per try, given with each try below")
+        else:
+            lines.append(f"- Query: `{scenario['query']}`")
+        lines.append(f"- Wardrobe: {scenario['wardrobe']}")
+        if scenario.get("model") == "unreachable":
+            lines.append("- Model: unreachable — one character of GEMINI_API_KEY changed in "
+                         "memory for each try (`run_eval.py::model_unreachable`)")
+        lines.append("")
 
         for i, record in enumerate(row["tries"], 1):
-            lines.append(f"**Try {i}**")
+            lines.append(f"**Try {i}**" + (f" — `{record['query']}`" if scenario.get("queries") else ""))
             lines.append("")
 
             if record["crashed"]:
@@ -191,6 +248,7 @@ def write_report(rows, args):
                 f"- selected_item: {item.get('title', '(none)')}"
                 + (f" (${item.get('price')}, {item.get('platform')})" if item else ""),
                 f"- search_results: {len(session.get('search_results') or [])}",
+                f"- steps: {' → '.join(session.get('steps') or []) or '(none)'}",
                 "",
             ]
             if session.get("outfit_suggestion"):

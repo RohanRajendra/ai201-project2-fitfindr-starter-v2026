@@ -544,19 +544,176 @@ where it happened.
      `python run_eval.py --label before` runs everything and writes the table
      into results/. Paste it here and fill in the verdicts. -->
 
+`python run_eval.py --label before` wrote
+[`results/run_2026-10-13_2045_before.md`](results/run_2026-10-13_2045_before.md).
+It ran every scenario in `scenarios.py` five times, with the cache off and
+`TEMPERATURE` at 0.9, and made 46 model calls.
+
 | Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |  |  |
+| 1. A matching query completes all three tools | 4 of 5 | FAIL | PASS | FAIL | FAIL | PASS | MISSED (2/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | PASS | PASS | PASS | FAIL | FAIL | MISSED (3/5) |
+| 3. The found item reaches `suggest_outfit` | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. Fit cards name price and platform, and vary | 5 of 5 | FAIL | PASS | FAIL | PASS | PASS | MISSED (3/5) |
+| 5. A down model gets a readable message | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
 
-**Real output from one try**, pasted as text, naming the file and function
-that produced it:
+**What each try ran.** Every row is five *different* queries, one per try:
+try 1 ran the first query in that criterion's list in `scenarios.py`, try 2
+the second, and so on.
+- Criteria 3, 4, and 5 each call for 5 different queries.
+- Criteria 1 and 2 are tested the same way, so no row is one lucky query
+  repeated.
+- Each list was picked by a rule, written in its comment in `scenarios.py`,
+  before anything ran.
+
+| # | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 |
+|---|---|---|---|---|---|
+| 1 | vintage graphic tee under $30 | 90s track jacket in size M | silk slip dress in midi length under $40 | platform sneakers size 8 | denim jacket under $50 |
+| 2 | designer ballgown size XXS under $5 | platform sneakers size 11 | track jacket under $20 | leather jacket under $40 | red cowboy boots |
+| 3 | velvet blazer | chunky knit cardigan | chelsea boots size 8.5 | cargo pants under $30 | crochet halter top size S under $25 |
+| 4 | y2k baby tee | corduroy pants | vintage windbreaker | mini shoulder bag | denim shorts |
+| 5 (model unreachable) | denim vest | henley | polo shirt | linen trousers | tie-dye long sleeve |
+
+- **Criterion 5's tries ran with the model unreachable.**
+  `run_eval.py::model_unreachable` changes one character of `GEMINI_API_KEY`
+  for each try, in memory only, and then puts it back. That's the change
+  criterion 5 describes, made without editing `.env`.
+- **The two harness additions** (both in `run_eval.py`) are one query per
+  try (`query_for`) and the model-unreachable mode. The agent itself is
+  untouched by them.
+- **Not one of the five:** the empty-wardrobe diagnostic
+  (`denim jacket under $50`, with an empty wardrobe) completed 5 of 5 with
+  general styling advice.
+
+**Real output, one try per criterion.** Each block below is copied from the
+results file, which `run_eval.py::write_report` wrote. The run itself is
+`agent.py::run_agent`:
+- the search is `tools.py::search_listings`, reached through `mcp_server.py`
+- the outfit is `tools.py::suggest_outfit`
+- the card is `tools.py::create_fit_card`
+- the stop messages come from `agent.py::_no_results_message` and
+  `agent.py::_model_down_message`
+
+Long outfit texts are cut where marked; they're in full in the results file.
+
+*Criterion 1, try 1 (FAIL)*, `vintage graphic tee under $30`. The model call
+in `create_fit_card` failed, although the key was fine:
 
 ```
+- stopped early: yes — Found Vintage Band Tee — Faded Grey for $19 on depop, but the styling service is unavailable right now, so there's no outfit or fit card this time. Try again in a few minutes. If it keeps failing, check that you're online and that GEMINI_API_KEY in the project's .env file is correct, or create a new key at aistudio.google.com.
+- selected_item: Vintage Band Tee — Faded Grey ($19.0, depop)
+- search_results: 10
+- steps: search_listings → compare_price → suggest_outfit → create_fit_card
 
+[1] search_listings (via MCP)
+      in:  description='vintage graphic tee', size=None, max_price=30.0
+      out: 10 items: Vintage Band Tee — Faded Grey, Graphic Tee — 2003 Tour Bootleg Style, Y2K Baby Tee — Butterfly Print … +7 more
+      →    not empty: selected_item = the first result
+[2] compare_price
+      in:  Vintage Band Tee — Faded Grey ($19.0, depop)
+      out: {'price': 19.0, 'typical_price': 21.5, 'verdict': 'about typical', 'compared_with': 14}
+[3] suggest_outfit
+      in:  Vintage Band Tee — Faded Grey ($19.0, depop)
+      out: Outfit 1: Grunge Streetwear  Wear the Vintage Band Tee tucked into the Baggy straight-leg jeans, dark wash. La…
+      →    wardrobe: 10 pieces
+[4] create_fit_card
+      in:  Vintage Band Tee — Faded Grey ($19.0, depop)
+      →    the model couldn't be reached: stop with a message
+```
+
+*Criterion 2, try 5 (FAIL)*, `red cowboy boots`. Nothing in the data is red
+cowboy boots, but the loop went all the way to a fit card for a crewneck:
+
+```
+- stopped early: no
+- selected_item: Oversized College Crewneck — Faded Red ($21.0, thredUp)
+- search_results: 3
+- steps: search_listings → compare_price → suggest_outfit → create_fit_card
+
+Fit card:
+Living in this faded red oversized college crewneck because the vintage athletic vibe is just too good. Score it on thredUp for only $21 and it's already my favorite piece for lazy campus days.
+
+#thriftedfashion #oversizedsweater #vintageathletic
+
+[1] search_listings (via MCP)
+      in:  description='red cowboy boots', size=None, max_price=None
+      out: 3 items: Oversized College Crewneck — Faded Red, Oversized Flannel Shirt — Plaid Red/Black, Suede Chelsea Boots — Tan
+      →    not empty: selected_item = the first result
+[2] compare_price
+      in:  Oversized College Crewneck — Faded Red ($21.0, thredUp)
+      out: {'price': 21.0, 'typical_price': 21.0, 'verdict': 'about typical', 'compared_with': 14}
+[3] suggest_outfit
+      in:  Oversized College Crewneck — Faded Red ($21.0, thredUp)
+      out: Outfit 1: Sporty Streetwear Layer your faded red oversized college crewneck over the white ribbed tank top, pa…
+      →    wardrobe: 10 pieces
+[4] create_fit_card
+      in:  Oversized College Crewneck — Faded Red ($21.0, thredUp)
+      out: Living in this faded red oversized college crewneck because the vintage athletic vibe is just too good. Score …
+      →    with the outfit from suggest_outfit
+```
+
+*Criterion 3, try 1 (PASS)*, `velvet blazer`. The second branch swapped the
+pick, and the item shown going into `suggest_outfit` is
+`session["selected_item"]`. This try then hit the same model failure as
+criterion 1, at `create_fit_card`, which criterion 3 doesn't measure:
+
+```
+- stopped early: yes — Found Vintage Linen Blazer — Cream for $38 on thredUp, but the styling service is unavailable right now, so there's no outfit or fit card this time. Try again in a few minutes. If it keeps failing, check that you're online and that GEMINI_API_KEY in the project's .env file is correct, or create a new key at aistudio.google.com.
+- selected_item: Vintage Linen Blazer — Cream ($38.0, thredUp)
+- search_results: 2
+- steps: search_listings → compare_price → compare_price → suggest_outfit → create_fit_card
+
+[1] search_listings (via MCP)
+      in:  description='velvet blazer', size=None, max_price=None
+      out: 2 items: Velvet Blazer — Emerald Green, Vintage Linen Blazer — Cream
+      →    not empty: selected_item = the first result
+[2] compare_price
+      in:  Velvet Blazer — Emerald Green ($52.0, depop)
+      out: {'price': 52.0, 'typical_price': 40.0, 'verdict': 'above typical', 'compared_with': 7}
+      →    above typical: switch to Vintage Linen Blazer — Cream, then check its price
+[3] compare_price
+      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
+      out: {'price': 38.0, 'typical_price': 42.0, 'verdict': 'about typical', 'compared_with': 7}
+[4] suggest_outfit
+      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
+      out: Outfit 1: High-Low Contrast Pair the vintage linen blazer with the white ribbed tank top and baggy straight-le…
+      →    wardrobe: 10 pieces
+[5] create_fit_card
+      in:  Vintage Linen Blazer — Cream ($38.0, thredUp)
+      →    the model couldn't be reached: stop with a message
+```
+
+*Criterion 4, try 1 (FAIL)*, `y2k baby tee`. The card names depop but writes
+the $18 price in words:
+
+```
+- selected_item: Y2K Baby Tee — Butterfly Print ($18.0, depop)
+- steps: search_listings → compare_price → suggest_outfit → create_fit_card
+
+Fit card:
+Accidentally unlocked peak 2000s mall goth energy with this little butterfly baby tee. Scored it on depop for eighteen bucks and I am never taking it off. Looks so good under an oversized jacket with some beat-up combat boots.
+
+#y2k #babytee
+```
+
+*Criterion 5, try 2 (PASS)*, `henley`, with the model unreachable:
+
+```
+- stopped early: yes — Found Henley Long Sleeve — Washed Burgundy for $16 on thredUp, but the styling service is unavailable right now, so there's no outfit or fit card this time. Try again in a few minutes. If it keeps failing, check that you're online and that GEMINI_API_KEY in the project's .env file is correct, or create a new key at aistudio.google.com.
+- selected_item: Henley Long Sleeve — Washed Burgundy ($16.0, thredUp)
+- search_results: 1
+- steps: search_listings → compare_price → suggest_outfit
+
+[1] search_listings (via MCP)
+      in:  description='henley', size=None, max_price=None
+      out: 1 items: Henley Long Sleeve — Washed Burgundy
+      →    not empty: selected_item = the first result
+[2] compare_price
+      in:  Henley Long Sleeve — Washed Burgundy ($16.0, thredUp)
+      out: {'price': 16.0, 'typical_price': 21.5, 'verdict': 'below typical', 'compared_with': 14}
+[3] suggest_outfit
+      in:  Henley Long Sleeve — Washed Burgundy ($16.0, thredUp)
+      →    the model couldn't be reached: stop with a message
 ```
 
 ---
