@@ -3,9 +3,11 @@ FitFindr's MCP server.
 
 MCP is an agreed shape for describing a tool, so anything that speaks the
 protocol can call it: this agent today, a different agent tomorrow. This
-server offers one tool, search_listings. agent.py::run_agent calls it through
-mcp_client.call_tool; suggest_outfit and create_fit_card are still called
-directly.
+server offers two tools: search_listings (unit 4) and compare_price (unit 4
+stretch). agent.py::run_agent calls both through mcp_client.call_tool;
+suggest_outfit and create_fit_card call the model and are still called
+directly, because a server process wouldn't see run_eval.py's cache-off
+switch.
 
     python mcp_server.py        starts the server (it will just sit there — that's right)
     python mcp_client.py        asks the server what it offers
@@ -16,8 +18,9 @@ units and types are named, and so is what comes back when nothing matches.
 
 from mcp.server.fastmcp import FastMCP
 
-# The real tool comes in under an alias: the function registered below takes
-# the name "search_listings", and without the alias it would call itself.
+# The real tools come in under aliases: the functions registered below take
+# their names, and without the aliases they would call themselves.
+from tools import compare_price as _compare_price_impl
 from tools import search_listings as _search_listings_impl
 
 # log_level="WARNING" keeps the server from printing an INFO line for every
@@ -57,6 +60,34 @@ def search_listings(
     nothing matched.
     """
     return _search_listings_impl(description, size, max_price)
+
+
+@mcp.tool()
+def compare_price(item: dict) -> dict:
+    """
+    Say whether one secondhand listing's price is below, about, or above what
+    similar listings cost: its price against the median price of the other
+    listings in the same category (tops, bottoms, outerwear, shoes or
+    accessories) among the same 40 listings. Returns "no comparison", never
+    an error, when it can't compare.
+
+    Input:
+      item (object, required): one listing, as search_listings returns it.
+        Its price (US dollars), category, and id (so it isn't compared with
+        itself) are used.
+
+    Returns: an object with
+      price (number or null): the item's price in US dollars, or null when it
+        has no usable price.
+      typical_price (number or null): the median price, in US dollars, of the
+        other listings in its category; null when there are none to compare.
+      verdict (string): "below typical" when the price is at least 15% under
+        typical_price, "above typical" when it's at least 15% over, "about
+        typical" in between, and "no comparison" when either price is null.
+      compared_with (integer): how many listings the median came from; 0 when
+        there's no comparison.
+    """
+    return _compare_price_impl(item)
 
 
 # FastMCP builds the input schema from the type hints, which is why they're

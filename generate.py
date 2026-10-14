@@ -18,7 +18,8 @@ What this does for you:
   • Stops if a session makes an unreasonable number of calls, rather than
     silently draining your day's allowance. A runaway agent loop is the
     classic way to do that.
-  • Retries when the service says you're going too fast.
+  • Retries when the service says you're going too fast, or that it's busy
+    (a 503 and its relatives: errors on its side that usually pass).
   • Returns a readable message when the model can't be reached, instead of a
     stack trace. Unit 4 Milestone 2 has you trigger exactly that on purpose.
   • Counts your calls and the tokens they used, so quota — and cost — are
@@ -241,6 +242,19 @@ def _retry_delay(exc: Exception, attempt: int) -> float:
     return min(65.0, max(2.0 ** attempt, hinted))
 
 
+def _server_busy(message: str) -> bool:
+    """
+    An error on the service's side that usually passes: 503 UNAVAILABLE
+    ("This model is currently experiencing high demand… Please try again
+    later"), 500 INTERNAL, 504 DEADLINE_EXCEEDED. Worth waiting and trying
+    again, like a rate limit. A rejected key (400) or an unknown model name
+    (404) isn't: it fails the same way every time.
+    """
+    return bool(re.match(r"\s*(500|503|504)\b", message)) or any(
+        word in message for word in ("unavailable", "high demand", "overloaded", "deadline_exceeded")
+    )
+
+
 def _get_client():
     global _client
     if _client is None:
@@ -296,6 +310,7 @@ def generate(
     _check_budget()
 
     last_error: Exception | None = None
+    busy = False
     for attempt in range(config.MAX_RETRIES):
         _wait_for_slot()
         try:
@@ -328,18 +343,33 @@ def generate(
                 or "resource" in message and "exhaust" in message
                 or "rate" in message and "limit" in message
             )
-            if not rate_limited:
+            busy = not rate_limited and _server_busy(message)
+            if not (rate_limited or busy):
                 raise ModelUnavailable(_explain(exc)) from exc
             backoff = _retry_delay(exc, attempt)
-            print(
-                f"  [rate limit] service pushed back. Waiting {backoff:.0f}s "
-                f"(attempt {attempt + 1} of {config.MAX_RETRIES}). This is "
-                f"the limiter doing its job, not a bug.",
-                file=sys.stderr,
-                flush=True,
-            )
+            if busy:
+                status = str(exc).split(".")[0].strip()[:40]  # e.g. "503 UNAVAILABLE"
+                print(
+                    f"  [model busy] the service answered {status}. Waiting "
+                    f"{backoff:.0f}s, then trying again (attempt {attempt + 1} "
+                    f"of {config.MAX_RETRIES}).",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  [rate limit] service pushed back. Waiting {backoff:.0f}s "
+                    f"(attempt {attempt + 1} of {config.MAX_RETRIES}). This is "
+                    f"the limiter doing its job, not a bug.",
+                    file=sys.stderr,
+                    flush=True,
+                )
             time.sleep(backoff)
 
+    if busy:
+        # Busy on every attempt: the model really is unreachable for now, so
+        # the agent's handler can say so, as it does for a bad key.
+        raise ModelUnavailable(_explain(last_error)) from last_error
     raise RuntimeError(
         f"Still rate limited after {config.MAX_RETRIES} attempts. Wait a "
         f"minute and try again — your key is fine.\nLast error: {last_error}"

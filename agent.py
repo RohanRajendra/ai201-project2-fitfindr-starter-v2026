@@ -43,6 +43,7 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "query": query,              # what the user typed
         "parsed": {},                # description / size / max_price you pulled out of it
         "search_results": [],        # everything search_listings returned
+        "dropped": None,             # a constraint the retry dropped to find something, e.g. "size 11"
         "selected_item": None,       # the one you chose — goes into suggest_outfit
         "price_check": None,         # what compare_price said about selected_item
         "passed_over": None,         # an overpriced pick the second branch switched away from
@@ -186,6 +187,11 @@ def _no_results_message(parsed: dict) -> str:
     return f"No listings matched {asked}. " + " ".join(advice)
 
 
+def _check_price(item: dict) -> dict:
+    """compare_price, over MCP since the unit 4 stretch: mcp_server.py offers it."""
+    return call_tool("compare_price", {"item": item})
+
+
 def _title_noun(item: dict) -> str:
     """The item word at the end of the title: "Velvet Blazer — Emerald Green" -> "blazer"."""
     return _stem(item["title"].split(" — ")[0].split()[-1].lower())
@@ -203,7 +209,7 @@ def _better_deal(session: dict) -> dict | None:
                 and candidate["category"] == pick["category"]
                 and _title_noun(candidate) == _title_noun(pick)
                 and candidate["price"] < pick["price"]
-                and compare_price(candidate)["verdict"] != "above typical"):
+                and _check_price(candidate)["verdict"] != "above typical"):
             return candidate
     return None
 
@@ -267,9 +273,15 @@ def run_agent(query: str, wardrobe: dict) -> dict:
       session["passed_over"], and check the new pick's price. Otherwise go on
       to suggest_outfit, then create_fit_card.
 
+      Retry (unit 4 stretch): if that empty search had a size, search once
+      more without it before stopping. If that finds something, carry on
+      with it and record the dropped size in session["dropped"]; if not,
+      stop with the same message as above.
+
       If either model tool can't reach the model (ModelUnavailable: a bad
-      key, no network), put a message in session["error"] saying the styling
-      service is unavailable and to try again, and stop.
+      key, no network, or a service still busy after generate()'s retries),
+      put a message in session["error"] saying the styling service is
+      unavailable and to try again, and stop.
 
     Each pass of the loop runs one step, reads its inputs back out of the
     session, writes its result into the session, and picks the next step.
@@ -278,7 +290,10 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     ─────────────────────────────────────────────────────────────────────────
     Unit 4 added three things:
 
-      • search_listings goes through MCP (mcp_server.py, via call_tool).
+      • search_listings goes through MCP (mcp_server.py, via call_tool), and
+        since the stretch so does compare_price: the price step and
+        _better_deal's check of each candidate. switch_line still calls it
+        directly; it only words a line for the screen.
 
       • One trace.step() per tool call, after it returns: the tool, what went
         in, what came back, and a note on the branch taken. They print only
@@ -306,19 +321,41 @@ def run_agent(query: str, wardrobe: dict) -> dict:
                 "size": parsed["size"],
                 "max_price": parsed["max_price"],
             })
-            if not session["search_results"]:  # the branch: stop, say what to change
-                session["error"] = _no_results_message(parsed)
-                note, step = "empty: stop here, suggest_outfit is never called", "done"
-            else:
+            if session["search_results"]:
                 session["selected_item"] = session["search_results"][0]
                 note, step = "not empty: selected_item = the first result", "price"
+            elif parsed["size"]:  # stretch: one more search, without the size
+                note, step = "empty: try once more without the size", "retry"
+            else:  # the branch: stop, say what to change
+                session["error"] = _no_results_message(parsed)
+                note, step = "empty: stop here, suggest_outfit is never called", "done"
             trace.step("search_listings (via MCP)", inputs=_search_inputs(parsed),
+                       returned=session["search_results"], note=note)
+
+        elif step == "retry":
+            parsed = session["parsed"]
+            looser = {**parsed, "size": None}
+            session["steps"].append("search_listings")
+            session["search_results"] = call_tool("search_listings", {
+                "description": looser["description"],
+                "size": None,
+                "max_price": looser["max_price"],
+            })
+            if session["search_results"]:
+                session["dropped"] = f"size {parsed['size']}"
+                session["selected_item"] = session["search_results"][0]
+                note, step = f"dropped size {parsed['size']}: selected_item = the first result", "price"
+            else:  # still nothing: the same message as without a retry, size advice and all
+                session["error"] = _no_results_message(parsed)
+                note = f"still empty without size {parsed['size']}: stop, suggest_outfit is never called"
+                step = "done"
+            trace.step("search_listings (via MCP)", inputs=_search_inputs(looser),
                        returned=session["search_results"], note=note)
 
         elif step == "price":
             item = session["selected_item"]
             session["steps"].append("compare_price")
-            session["price_check"] = compare_price(item)
+            session["price_check"] = _check_price(item)
             above = session["price_check"]["verdict"] == "above typical"
             better = _better_deal(session) if above and not session["passed_over"] else None
             if better:  # the second branch: switch, then check the new pick's price
@@ -328,7 +365,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             else:
                 note = "above typical, but no cheaper close match: keep it" if above else ""
                 step = "suggest"
-            trace.step("compare_price", inputs=item, returned=str(session["price_check"]), note=note)
+            trace.step("compare_price (via MCP)", inputs=item, returned=str(session["price_check"]), note=note)
 
         elif step == "suggest":
             item = session["selected_item"]
@@ -373,6 +410,21 @@ def price_check_line(session: dict) -> str | None:
 
 
 
+def retry_line(session: dict) -> str | None:
+    """
+    What the empty-search retry dropped, and the size of what it found
+    instead, or None when it didn't drop anything. The price ceiling is named
+    too when there was one: "nothing came in size S" isn't true when a size S
+    exists over the ceiling.
+    """
+    if not session.get("dropped"):
+        return None
+    max_price = (session.get("parsed") or {}).get("max_price")
+    asked = session["dropped"] + (f" under {_price(max_price)}" if max_price is not None else "")
+    found = (session.get("selected_item") or {}).get("size", "another size")
+    return f"Nothing came in {asked}, so I searched again without the size: this one is size {found}."
+
+
 def switch_line(session: dict) -> str | None:
     """What the second branch passed over and why, or None when it didn't switch."""
     old = session.get("passed_over")
@@ -390,6 +442,8 @@ def _show(session: dict) -> None:
         return
 
     item = session["selected_item"] or {}
+    if retry_line(session):
+        print(f"  {retry_line(session)}")
     print(f"  found:    {item.get('title')} — ${item.get('price')} on {item.get('platform')}")
     print(f"  price:    {price_check_line(session)}")
     if switch_line(session):

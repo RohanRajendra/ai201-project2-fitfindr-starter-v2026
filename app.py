@@ -108,7 +108,7 @@ def cmd_examples(args):
 
 
 def _ask_one(query, wardrobe, use_trace):
-    from agent import price_check_line, run_agent, switch_line
+    from agent import price_check_line, retry_line, run_agent, switch_line
     import trace as trace_module
 
     if use_trace:
@@ -121,6 +121,8 @@ def _ask_one(query, wardrobe, use_trace):
         print(f"  {session['error']}")
     else:
         item = session["selected_item"] or {}
+        if retry_line(session):
+            print(f"  {retry_line(session)}")
         print(f"  Found:    {item.get('title')} — ${item.get('price')} on {item.get('platform')}")
         print(f"  Price:    {price_check_line(session)}")
         if switch_line(session):
@@ -164,7 +166,10 @@ def cmd_ask(args):
 
         if args.remember and not session["error"] and session["selected_item"]:
             item = session["selected_item"]
-            if memory.remember(item):
+            if session.get("dropped"):  # the size retry found it in another size
+                print(f"  Not saved to your wardrobe: it isn't in {session['dropped']}, "
+                      "the size you asked for.\n")
+            elif memory.remember(item):
                 count = len(memory.load_wardrobe()["items"])
                 print(f"  Remembered {item['title']}. Your saved wardrobe has "
                       f"{count} piece{'' if count == 1 else 's'} now.\n")

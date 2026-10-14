@@ -17,7 +17,7 @@
 > the whole agent.
 >
 > Unit 4 additions:
-> - The search runs through MCP (`mcp_server.py`).
+> - The search and the price check run through MCP (`mcp_server.py`).
 > - `python app.py ask '...' --trace` prints the loop step by step.
 > - `python run_eval.py --label <name>` runs the five-tries test. That costs
 >   about 45 model calls, so mind a free-tier key.
@@ -187,20 +187,27 @@ Loop).
   max price) and stops. `suggest_outfit` is never called, and `fit_card`
   stays `None`.
 - Otherwise it takes the first (best-scoring) result as
-  `session["selected_item"]` and checks its price with `compare_price`.
+  `session["selected_item"]` and checks its price with `compare_price`, over
+  MCP since the unit 4 stretch.
 - **Second branch (stretch):** if that pick is above typical and the search
   results hold a cheaper close match (same category, same item word in the
   title, not above typical itself), the loop switches to it, keeps the
   original in `session["passed_over"]`, and checks the new pick's price.
   Otherwise it goes on to `suggest_outfit`, then `create_fit_card`.
+- **Retry without the size** (unit 4 stretch): before that empty-search
+  stop, if the query had a size, the loop searches once more without it. If
+  that finds something, it carries on with it and records the dropped size
+  in `session["dropped"]`. If not, it stops with the same message.
 - **If the model can't be reached** (unit 4): when `suggest_outfit` or
-  `create_fit_card` raises `ModelUnavailable` (a bad key, or no network), the
+  `create_fit_card` raises `ModelUnavailable` (a bad key, no network, or a
+  service that stays busy through every retry), the
   loop puts a message in `session["error"]` and stops. The message says the
   styling service is unavailable and to try again. No outfit or fit card is
   shown.
 
 **Where it lives:** `agent.py::run_agent`. It's a `while` loop over named
-steps (search → price → suggest → card → done), and every pass calls
+steps (search → retry, only when an empty search had a size → price →
+suggest → card → done), and every pass calls
 `trace.check_iterations(count)`, so a runaway loop raises an error once it
 passes `MAX_ITERATIONS` (10) instead of running forever.
 
@@ -218,18 +225,21 @@ session, not from a local variable. The fields fill in this order:
 1. `query`
 2. `parsed` (`description`, `size`, `max_price`)
 3. `search_results`
-4. `selected_item` (`search_results[0]`, unless the second branch switches
+4. `dropped` (only set when the size retry found something, e.g. `"size 11"`)
+5. `selected_item` (`search_results[0]`, unless the second branch switches
    to a cheaper close match)
-5. `price_check` (what `compare_price` said; stretch tool, see below)
-6. `passed_over` (only set when the second branch switched)
-7. `outfit_suggestion`
-8. `fit_card`
+6. `price_check` (what `compare_price` said; stretch tool, see below)
+7. `passed_over` (only set when the second branch switched)
+8. `outfit_suggestion`
+9. `fit_card`
 
 `steps` lists the tool each loop step called, in order:
 `["search_listings", "compare_price", "suggest_outfit", "create_fit_card"]` on
 a full run, with `compare_price` twice when the second branch switched (the old
 pick, then the new one). It's
-`["search_listings"]` when the branch stops it. When the model can't be
+`["search_listings"]` when the branch stops it. It's
+`["search_listings", "search_listings"]` when a query with a size stops
+after the size retry. When the model can't be
 reached, it ends at the model tool that failed. `error` is set only when the
 run stops early.
 
@@ -380,11 +390,8 @@ Can't write a fit card without an outfit suggestion.
 
 **Moment 4: arguing against my own verdicts**
 
-- *What I asked:* The course's prompt, given to a fresh Claude along with my
-  criteria, tries and verdicts: "Argue the opposite verdict as strongly as
-  you can."
-- *What came back:* No mark was wrong on a plain reading, but it made four
-  real arguments:
+- *What I asked:* My existing criteria and verdicts: push the criteria on its edge cases and contradict the verdicts. 
+- *What came back:* four arguments were returned based on the tests:
   1. The outages belong to criterion 5.
   2. "red cowboy boots" returned 3 results, so it "matched".
   3. The second branch's swap meant the "found item" never reached
@@ -404,8 +411,7 @@ Can't write a fit card without an outfit suggestion.
 
 **Moment 5: which tool to move onto MCP second**
 
-- *What I asked:* Plan the unit, including which tool to move onto MCP for
-  the stretch.
+- *What I asked:* Planning the mcp tool call for additional features. 
 - *What came back:*
   - Every `call_tool` starts `mcp_server.py` as a separate process.
   - That process gets only a short list of environment variables, and it
@@ -415,11 +421,8 @@ Can't write a fit card without an outfit suggestion.
     measuring what they claim, and the calls would bypass `generate.py`'s
     rate limiter.
 - *What I changed:*
-  - I picked `compare_price`, which makes no model call, for the "second
-    tool on MCP" stretch item. That's declared, and then built, after the
-    milestones.
-  - Criterion 5 breaks the key inside the process that makes the model
-    calls.
+  - `compare_price` to make no model call, for the "second tool on MCP" additional feature. 
+  - Criterion 5 breaks the key inside the process that makes the model calls.
 
 ---
 
@@ -1003,6 +1006,9 @@ tool returns. Each step has the tool, what went in (`in:`), what came back
 - Steps are only recorded once `trace.start_trace()` has run. `ask --trace`
   starts it, and so does `run_eval.py` on every try. A plain `ask` prints no
   trace.
+- Since unit 4 stretch item 2, `compare_price` goes over MCP too, so a run
+  today shows `compare_price (via MCP)` where the traces below say
+  `compare_price`. See Unit 4 Stretch Features for a current trace.
 - The happy-path and second-branch traces below were re-recorded after
   Milestone 5's strict matching.
   - The happy path's search now returns 1 item instead of 10, and it's the
@@ -1050,6 +1056,10 @@ This is the same query as the Sample Run, so its outfit and card came from the
 cache.
 
 **Empty search** (one step: the branch stops before `suggest_outfit`)
+
+Recorded before unit 4's stretch retry. Today this query has a size, so it
+searches once more without `XXS` before stopping with the same message: two
+steps. Unit 4 Stretch Features, item 3, has that trace.
 
 ```
 $ python app.py ask 'designer ballgown size XXS under $5' --trace
@@ -1369,6 +1379,11 @@ about each, and why I stopped where I did.
   - The retry is the declared stretch improvement, measured in its own run.
   - The catch: a run where the service happens to behave can't show the
     retry working, so its measurement depends on the service.
+- **Update after the stretch:** step 1 is now built, as the second measured
+  improvement. Criterion 1 was MET (5/5) in the third run. The retry
+  caught the one 503 that run hit, though most of the jump came from a
+  healthier service (see Unit 4 Stretch Features, item 1). Steps 2 and 3
+  are still open.
 
 **Criterion 4, MISSED (1/5 after, 3/5 before): two causes.**
 - **The same 503s:** 2 of the 5 tries ended with no card. The fix above
@@ -1386,6 +1401,10 @@ about each, and why I stopped where I did.
   - It's noisy to measure: one bad card in five before the change.
   - Fixing it alongside search would have mixed two changes in one after
     run.
+- **Update after the stretch:** with the outages retried, criterion 4's third
+  run missed 2/5 for this reason alone. 9 of 20 cards wrote the price in
+  words ("18 dollars", "32 dollars", "forty bucks"). This prompt fix is now
+  the only thing between criterion 4 and its target.
 
 **Also still broken, outside the five criteria.** The first two were found by
 a fresh code review after the after run. I'm writing them down rather than
@@ -1436,6 +1455,305 @@ change after the measured runs wouldn't be measured.
   - `anything for me under $20` says nothing matches "for me", instead of
     asking what item you want.
 
+
+---
+
+## Unit 4 Stretch Features
+
+Declared here **before any of them is built**. Each one gets its own commit
+after this one. Once it's built, this section will say what it changed and
+show the run where it happened. They're built in the order listed: the
+second improvement comes first, so its run log measures that one change and
+nothing else.
+
+### 1. A second measured improvement: retry a passing model error
+
+- **What it fixes:** diagnosis 1.
+  - `generate()` retries only rate-limit errors. So a `503 UNAVAILABLE`
+    ("This model is currently experiencing high demand… Please try again
+    later") ends the run on the first attempt.
+  - That caused 4 of the 7 misses in the before run, and hit 11 of the 20
+    runs that reached the model in the after run.
+- **The change:** in `generate.py::generate`:
+  - Treat temporary server errors (503 UNAVAILABLE, and its relatives 500
+    INTERNAL and 504 DEADLINE_EXCEEDED) like a rate limit. Wait, try again,
+    and say so on screen, using the same attempts and backoff the 429 retry
+    already uses.
+  - If every attempt fails, raise `ModelUnavailable` as before, so the
+    handler's message still shows.
+  - A rejected key (400) or an unknown model name (404) still fails at once,
+    so criterion 5 is unaffected.
+- **How it will be measured:** `python run_eval.py --label second`.
+  - A third run log in the same table format, compared row by row with Run
+    Log — After.
+  - The console's retry lines show whether the retry fired at all. If the
+    service behaves during that run, the run can't show the retry working,
+    and I'll say so.
+- **Status:** built.
+  - In `generate.py`, a new `_server_busy()` recognizes 500, 503 and 504
+    errors. `generate()` now retries those on the same backoff as a 429,
+    printing a `[model busy]` line each time.
+  - If every attempt is busy, it raises `ModelUnavailable`, so the agent's
+    handler still shows its message.
+  - The check script (fake client, no real calls) confirmed the rest:
+    - A 400 rejected key and a 404 unknown model still fail on the first
+      attempt.
+    - 429s behave exactly as before.
+    - A 503 on `create_fit_card` no longer ends the run.
+
+**Run Log — Third**
+
+`python run_eval.py --label second` wrote
+[`results/run_2026-10-13_2231_second.md`](results/run_2026-10-13_2231_second.md).
+It ran the same scenarios and the same five queries per row with the cache
+off, and made 46 model calls.
+
+| Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
+|---|---|---|---|---|---|---|---|
+| 1. A matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. The found item reaches `suggest_outfit` | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. Fit cards name price and platform, and vary | 5 of 5 | FAIL | FAIL | FAIL | PASS | PASS | MISSED (2/5) |
+| 5. A down model gets a readable message | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+
+- Criterion 4's three FAILs all wrote the price in words: "18 dollars", "32
+  dollars" and "forty bucks". Every try produced a card.
+- The empty-wardrobe diagnostic completed 5 of 5.
+
+**All three runs side by side**
+
+| Criterion | Target | Before | After (strict matching) | Third (plus the retry) |
+|---|---|---|---|---|
+| 1. A matching query completes all three tools | 4 of 5 | MISSED (2/5) | MISSED (1/5) | **MET (5/5)** |
+| 2. An impossible query stops before the second tool | 5 of 5 | MISSED (3/5) | MET (5/5) | MET (5/5) |
+| 3. The found item reaches `suggest_outfit` | 5 of 5 | MET (5/5) | MET (5/5) | MET (5/5) |
+| 4. Fit cards name price and platform, and vary | 5 of 5 | MISSED (3/5) | MISSED (1/5) | MISSED (2/5) |
+| 5. A down model gets a readable message | 5 of 5 | MET (5/5) | MET (5/5) | MET (5/5) |
+| *Runs stopped by a model error, outside criterion 5* | — | 7 of 22 | 11 of 20 | **0 of 20** |
+| *Cards with the price written in words* | — | 3 of 15 | 3 of 9 | 9 of 20 |
+
+**Did it help, and how I know:** yes, but this run can only show it once.
+
+- **The retry fired once, and that once mattered.** The console of the third
+  run shows it in criterion 1, try 2:
+
+  ```
+  A matching query completes all three tools  (example wardrobe)
+    try 1 [vintage graphic tee under $30]: completed — fit card 222 chars
+    …  (try 2's live trace lines, cut here)
+    [model busy] the service answered 503 UNAVAILABLE. Waiting 1s, then trying again (attempt 1 of 5).
+    try 2 [90s track jacket in size M]: completed — fit card 279 chars
+  ```
+
+  - In the after run, this same try ended with the "styling service is
+    unavailable" message (in the before run it passed).
+  - Here the second attempt worked, and the try passed. Without the retry,
+    criterion 1 would have been 4/5. That still meets its target of 4 of 5,
+    but only just.
+- **Most of the jump from 1/5 to 5/5 was the service, not my change.**
+  - This run hit one busy answer in 46 calls. The after run had 11 runs
+    stopped by 503s, with calls taking 30–40 seconds.
+  - So this run shows the retry working, but not how much it would save on a
+    bad day like the after run.
+  - A fair way to measure that would be to run the same scenarios while the
+    service is struggling, with and without the retry. I can't schedule
+    that.
+- **What it didn't fix: criterion 4.** With the outages gone, every one of
+  criterion 4's misses is diagnosis 3. Across the run, 9 of 20 cards wrote the
+  price in words.
+  - That's the problem I left for What's Still Broken.
+  - It now limits criterion 4 on its own. If the service stays healthy, the
+    price wording is the one thing between criterion 4 and its target.
+- **Cost:** a retried call is one more request. This run spent 46 calls (45
+  plus 1 retry), and the free tier allows 500 a day. On a bad day each failing
+  call could take up to 5 attempts.
+
+### 2. A second tool on MCP: `compare_price`
+
+- **What:** `mcp_server.py` registers `compare_price(item: dict) -> dict`
+  next to `search_listings`.
+  - Its description will be written for someone who can't see the code:
+    prices in US dollars, the ±15% band, and the "no comparison" empty case.
+  - `run_agent`'s price step calls it through `mcp_client.call_tool`, and so
+    does `_better_deal`, which uses it to choose whether to switch.
+  - `switch_line` only formats a line for the screen, so it keeps calling it
+    directly.
+- **Why this tool:** it makes no model call. A model tool behind MCP would
+  run in a separate process that never sees `run_eval.py`'s cache-off switch
+  or criterion 5's broken key. That's Moment 5 under How I Used AI.
+- **How it will be shown:**
+  - A check that the MCP result equals the direct result for all 40
+    listings.
+  - A `--trace` run with both MCP calls visible: `search_listings (via MCP)`
+    and `compare_price (via MCP)`.
+- **Status:** built.
+  - `mcp_server.py` registers `compare_price(item: dict) -> dict`, with a
+    description that names dollars, the ±15% band, and the "no comparison"
+    case.
+  - `agent.py` has a small `_check_price(item)` that calls
+    `call_tool("compare_price", {"item": item})`. The price step and
+    `_better_deal` use it.
+- **What it changed:**
+  - **The trace:** the price step now shows as `compare_price (via MCP)`.
+    `session["steps"]` still says `compare_price`.
+  - **Speed:** each check starts the server once, about 0.8 seconds, like
+    the search. A switched run makes three of them: the pick, the cheaper
+    candidate inside `_better_deal`, and the new pick. The candidate check
+    isn't a loop step, so the trace shows two.
+  - **Results:** nothing. A check compared the MCP result with a direct call
+    for all 40 listings, an empty item, an item with no price, and a
+    category with nothing to compare. All matched, value types included.
+- **The server now offers both:**
+
+  ```
+  $ python mcp_client.py
+  Asking mcp_server.py what it offers…
+
+    search_listings
+      …
+      - description: string
+      - size: string  (optional)
+      - max_price: number  (optional)
+
+    compare_price
+      …
+      - item: object
+  ```
+
+  (`…` stands for each tool's description, cut here for length.)
+
+- **A run through both MCP tools** (outfit and card from the cache, 0 model
+  calls):
+
+  ```
+  $ python app.py ask "vintage levi's jeans" --trace
+  [1] search_listings (via MCP)
+        in:  description="vintage levi's jeans", size=None, max_price=None
+        out: 2 items: Vintage Levi's 501 Jeans — Medium Wash, Straight Leg Black Jeans — Faded
+        →    not empty: selected_item = the first result
+  [2] compare_price (via MCP)
+        in:  Vintage Levi's 501 Jeans — Medium Wash ($38.0, depop)
+        out: {'price': 38.0, 'typical_price': 30.0, 'verdict': 'above typical', 'compared_with': 9}
+        →    above typical: switch to Straight Leg Black Jeans — Faded, then check its price
+  [3] compare_price (via MCP)
+        in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+        out: {'price': 30.0, 'typical_price': 30.0, 'verdict': 'about typical', 'compared_with': 9}
+  [4] suggest_outfit
+        in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+        out: Outfit 1: Grunge Monochrome  Pair the straight leg black jeans — faded with the white ribbed tank top tucked i…
+        →    wardrobe: 10 pieces
+  [5] create_fit_card
+        in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+        out: Total 90s indie sleaze vibes with these faded black Levi's straight legs. Scored them on thredUp for just $30 …
+        →    with the outfit from suggest_outfit
+
+    Found:    Straight Leg Black Jeans — Faded — $30.0 on thredUp
+    Price:    $30, about the typical $30 for bottoms
+    Switched from Vintage Levi's 501 Jeans — Medium Wash ($38, above the typical $30 for bottoms) to this cheaper close match.
+  ```
+
+### 3. Retry an empty search without the size
+
+- **What:** when a search with a size comes back empty, the loop searches
+  once more without the size.
+  - If that finds something, the run goes on with it and says what it
+    dropped, for example "Nothing came in size 11, so I searched again
+    without the size."
+  - If it still finds nothing, the run stops with the same message as
+    before.
+  - It retries once at most, and only when a size was given.
+- **Where:** `agent.py::run_agent`. The search step hands off to a new
+  `retry` step, the session gets a `dropped` field, and `app.py` prints the
+  line.
+- **How it will be shown:** `python app.py ask 'platform sneakers size 11'
+  --trace`. The trace will show the second `search_listings (via MCP)` call
+  and a note naming the dropped size.
+- **What it will change:** criterion 2's `platform sneakers size 11` try
+  would no longer stop. Instead it would style the US 8 pair, and say so.
+  That trade is the point of the feature. All three run logs above are
+  recorded before it exists.
+- **Status:** built.
+  - `run_agent`'s search step hands an empty result that had a size to a new
+    `retry` step. That step calls `search_listings` over MCP again with the
+    same description and price but `size=None`.
+  - If that finds something, `session["dropped"]` becomes `"size 11"` and
+    the run carries on. If not, the run stops with the original message.
+  - `retry_line(session)` words it, and `app.py` prints it. The line names
+    the price ceiling too, if there was one, and the size of what was found.
+    For example: "Nothing came in size S under $40, so I searched again
+    without the size: this one is size M/L." The final review caught that a
+    first version said "Nothing came in size S", which is false when a size
+    S exists over the ceiling.
+  - The retry happens at most once, because the `retry` step never leads
+    back to `search`.
+  - Queries without a size don't change.
+- **Run log: the retry, and the constraint it dropped** (outfit and card from
+  the cache, 0 model calls):
+
+  ```
+  $ python app.py ask 'platform sneakers size 11' --trace
+  [1] search_listings (via MCP)
+        in:  description='platform sneakers', size='11', max_price=None
+        out: [] (empty)
+        →    empty: try once more without the size
+  [2] search_listings (via MCP)
+        in:  description='platform sneakers', size=None, max_price=None
+        out: 1 items: Platform Sneakers — White Chunky Sole
+        →    dropped size 11: selected_item = the first result
+  [3] compare_price (via MCP)
+        in:  Platform Sneakers — White Chunky Sole ($48.0, poshmark)
+        out: {'price': 48.0, 'typical_price': 44.0, 'verdict': 'about typical', 'compared_with': 3}
+  [4] suggest_outfit
+        in:  Platform Sneakers — White Chunky Sole ($48.0, poshmark)
+        out: Outfit 1: Streetwear Layers Pair the chunky white sneakers with the baggy straight-leg jeans, dark wash and th…
+        →    wardrobe: 10 pieces
+  [5] create_fit_card
+        in:  Platform Sneakers — White Chunky Sole ($48.0, poshmark)
+        out: Living in these chunky platform sneakers for that ultimate 90s skater vibe. Scored this pair on poshmark for $…
+        →    with the outfit from suggest_outfit
+
+    Nothing came in size 11, so I searched again without the size: this one is size US 8.
+    Found:    Platform Sneakers — White Chunky Sole — $48.0 on poshmark
+    Price:    $48, about the typical $44 for shoes
+  ```
+
+- **When the retry finds nothing too, the run stops as before**, with the
+  same message:
+
+  ```
+  $ python app.py ask 'designer ballgown size XXS under $5' --trace
+  [1] search_listings (via MCP)
+        in:  description='designer ballgown', size='XXS', max_price=5.0
+        out: [] (empty)
+        →    empty: try once more without the size
+  [2] search_listings (via MCP)
+        in:  description='designer ballgown', size=None, max_price=5.0
+        out: [] (empty)
+        →    still empty without size XXS: stop, suggest_outfit is never called
+
+    Nothing in the listings matches 'designer ballgown' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, nothing is listed under $5 (the cheapest listing is $12), and no listing comes in size XXS.
+  ```
+
+- **What it changed:**
+  - **Criterion 2.** In the before, after and third run logs,
+    `platform sneakers size 11` stopped. Today it styles the US 8 pair
+    instead, and says the size was dropped.
+    - So a fourth run would score that try FAIL against criterion 2 as
+      written ("stops before calling `suggest_outfit`").
+    - That's the trade this feature makes on purpose. Someone who wears an 11
+      gets a near miss they can judge, not a dead end.
+    - The criterion's other four tries still stop. The two with a size
+      (ballgown, size 11) now make two searches each.
+  - **The session** has a new field, `dropped`.
+  - **`--remember`** no longer saves a find the retry got in another size,
+    and it says why. Saving it would build later outfits around shoes the
+    user can't wear.
+  - **The trace** for a query with a size that finds nothing now shows two
+    search steps instead of one.
+  - **The checks:** four older checks assumed one search for the ballgown
+    query, and were updated to two. A new check covers the rest: the retry,
+    the dropped size, the unchanged message, no retry without a size, and
+    no retry when the size finds something.
 
 <!-- ═════════════════════════════════════════════════════════════════════
 
