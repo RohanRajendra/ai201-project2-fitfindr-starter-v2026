@@ -187,7 +187,8 @@ Loop).
   max price) and stops. `suggest_outfit` is never called, and `fit_card`
   stays `None`.
 - Otherwise it takes the first (best-scoring) result as
-  `session["selected_item"]` and checks its price with `compare_price`.
+  `session["selected_item"]` and checks its price with `compare_price`, over
+  MCP since the unit 4 stretch.
 - **Second branch (stretch):** if that pick is above typical and the search
   results hold a cheaper close match (same category, same item word in the
   title, not above typical itself), the loop switches to it, keeps the
@@ -996,6 +997,9 @@ tool returns. Each step has the tool, what went in (`in:`), what came back
 - Steps are only recorded once `trace.start_trace()` has run. `ask --trace`
   starts it, and so does `run_eval.py` on every try. A plain `ask` prints no
   trace.
+- Since unit 4 stretch item 2, `compare_price` goes over MCP too, so a run
+  today shows `compare_price (via MCP)` where the traces below say
+  `compare_price`. See Unit 4 Stretch Features for a current trace.
 - The happy-path and second-branch traces below were re-recorded after
   Milestone 5's strict matching.
   - The happy path's search now returns 1 item instead of 10, and it's the
@@ -1568,7 +1572,71 @@ off, and made 46 model calls.
     listings.
   - A `--trace` run with both MCP calls visible: `search_listings (via MCP)`
     and `compare_price (via MCP)`.
-- **Status:** not built yet.
+- **Status:** built.
+  - `mcp_server.py` registers `compare_price(item: dict) -> dict`, with a
+    description that names dollars, the ±15% band, and the "no comparison"
+    case.
+  - `agent.py` has a small `_check_price(item)` that calls
+    `call_tool("compare_price", {"item": item})`. The price step and
+    `_better_deal` use it.
+- **What it changed:**
+  - **The trace:** the price step now shows as `compare_price (via MCP)`.
+    `session["steps"]` still says `compare_price`.
+  - **Speed:** each check starts the server once, about 0.8 seconds, like
+    the search. A switched run makes three of them: the pick, the cheaper
+    candidate inside `_better_deal`, and the new pick. The candidate check
+    isn't a loop step, so the trace shows two.
+  - **Results:** nothing. A check compared the MCP result with a direct call
+    for all 40 listings, an empty item, an item with no price, and a
+    category with nothing to compare. All matched, value types included.
+- **The server now offers both:**
+
+  ```
+  $ python mcp_client.py
+  Asking mcp_server.py what it offers…
+
+    search_listings
+      …
+      - description: string
+      - size: string  (optional)
+      - max_price: number  (optional)
+
+    compare_price
+      …
+      - item: object
+  ```
+
+  (`…` stands for each tool's description, cut here for length.)
+
+- **A run through both MCP tools** (outfit and card from the cache, 0 model
+  calls):
+
+  ```
+  $ python app.py ask "vintage levi's jeans" --trace
+  [1] search_listings (via MCP)
+        in:  description="vintage levi's jeans", size=None, max_price=None
+        out: 2 items: Vintage Levi's 501 Jeans — Medium Wash, Straight Leg Black Jeans — Faded
+        →    not empty: selected_item = the first result
+  [2] compare_price (via MCP)
+        in:  Vintage Levi's 501 Jeans — Medium Wash ($38.0, depop)
+        out: {'price': 38.0, 'typical_price': 30.0, 'verdict': 'above typical', 'compared_with': 9}
+        →    above typical: switch to Straight Leg Black Jeans — Faded, then check its price
+  [3] compare_price (via MCP)
+        in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+        out: {'price': 30.0, 'typical_price': 30.0, 'verdict': 'about typical', 'compared_with': 9}
+  [4] suggest_outfit
+        in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+        out: Outfit 1: Grunge Monochrome  Pair the straight leg black jeans — faded with the white ribbed tank top tucked i…
+        →    wardrobe: 10 pieces
+  [5] create_fit_card
+        in:  Straight Leg Black Jeans — Faded ($30.0, thredUp)
+        out: Total 90s indie sleaze vibes with these faded black Levi's straight legs. Scored them on thredUp for just $30 …
+        →    with the outfit from suggest_outfit
+
+    Found:    Straight Leg Black Jeans — Faded — $30.0 on thredUp
+    Price:    $30, about the typical $30 for bottoms
+    Switched from Vintage Levi's 501 Jeans — Medium Wash ($38, above the typical $30 for bottoms) to this cheaper close match.
+  ```
 
 ### 3. Retry an empty search without the size
 

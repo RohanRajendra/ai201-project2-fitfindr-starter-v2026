@@ -186,6 +186,11 @@ def _no_results_message(parsed: dict) -> str:
     return f"No listings matched {asked}. " + " ".join(advice)
 
 
+def _check_price(item: dict) -> dict:
+    """compare_price, over MCP since the unit 4 stretch: mcp_server.py offers it."""
+    return call_tool("compare_price", {"item": item})
+
+
 def _title_noun(item: dict) -> str:
     """The item word at the end of the title: "Velvet Blazer — Emerald Green" -> "blazer"."""
     return _stem(item["title"].split(" — ")[0].split()[-1].lower())
@@ -203,7 +208,7 @@ def _better_deal(session: dict) -> dict | None:
                 and candidate["category"] == pick["category"]
                 and _title_noun(candidate) == _title_noun(pick)
                 and candidate["price"] < pick["price"]
-                and compare_price(candidate)["verdict"] != "above typical"):
+                and _check_price(candidate)["verdict"] != "above typical"):
             return candidate
     return None
 
@@ -278,7 +283,10 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     ─────────────────────────────────────────────────────────────────────────
     Unit 4 added three things:
 
-      • search_listings goes through MCP (mcp_server.py, via call_tool).
+      • search_listings goes through MCP (mcp_server.py, via call_tool), and
+        since the stretch so does compare_price: the price step and
+        _better_deal's check of each candidate. switch_line still calls it
+        directly; it only words a line for the screen.
 
       • One trace.step() per tool call, after it returns: the tool, what went
         in, what came back, and a note on the branch taken. They print only
@@ -318,7 +326,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         elif step == "price":
             item = session["selected_item"]
             session["steps"].append("compare_price")
-            session["price_check"] = compare_price(item)
+            session["price_check"] = _check_price(item)
             above = session["price_check"]["verdict"] == "above typical"
             better = _better_deal(session) if above and not session["passed_over"] else None
             if better:  # the second branch: switch, then check the new pick's price
@@ -328,7 +336,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             else:
                 note = "above typical, but no cheaper close match: keep it" if above else ""
                 step = "suggest"
-            trace.step("compare_price", inputs=item, returned=str(session["price_check"]), note=note)
+            trace.step("compare_price (via MCP)", inputs=item, returned=str(session["price_check"]), note=note)
 
         elif step == "suggest":
             item = session["selected_item"]
