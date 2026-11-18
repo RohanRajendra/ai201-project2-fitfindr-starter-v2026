@@ -83,6 +83,7 @@ does nothing.
 | `python mcp_client.py` | Asks the server what it offers — **unit 4** |
 | `python run_eval.py --label before` | Runs every scenario five times and writes the run log — **unit 4** |
 | `python serve.py` | Serves the agent over HTTP instead of exiting — **unit 9** |
+| `python measure.py <url> --label <name>` | Times twelve requests against a running server and saves them with its log records — **unit 9** |
 
 Useful flags on `ask`:
 
@@ -149,9 +150,80 @@ gunicorn serve:app
 | `gunicorn serve:app`, exactly | Not `-k gevent`, not `-k eventlet`, not wrapped for uvicorn. `mcp_client.call_tool` uses `asyncio.run()`, which won't start inside a running event loop, so an async worker breaks **every** MCP call — and only once you've deployed it |
 | The first request is slow | The free tier puts your app to sleep after about fifteen minutes of nothing. The next request wakes it up and waits for it — around a minute. Not a bug, and worth knowing before you demo it |
 
-`serve.py` ships with **no logging and no timing in it**, on purpose. You add
-that yourself in the follow-along, before you deploy — instrumenting first is
-the point of the session.
+`serve.py` shipped with **no logging and no timing in it**, on purpose. Since
+the capstone it logs every `/ask` request as one JSON line and has a third
+route, `GET /log`. Where it runs and how to start it are in the next section.
+
+---
+
+## Capstone: where it runs — **unit 9**
+
+The same code runs in two places, and both write the same log: one JSON line
+per `/ask` request, to stdout and to `results/serve_log.jsonl`. The README's
+Capstone section says what each record holds.
+
+### Hosted: Render
+
+| | |
+|---|---|
+| URL | _filled in after the first deploy_ |
+| Platform | Render, free web service: 512 MB, and it sleeps after 15 idle minutes |
+| How it got there | `render.yaml` as a Blueprint: New → Blueprint → this repo, branch `dev` → paste `GEMINI_API_KEY` when asked → Apply. Every push to `dev` redeploys it |
+| Build | `pip install -r requirements.txt` (versions pinned there) |
+| Start | `gunicorn serve:app --workers 1 --timeout 120` (`render.yaml` says why) |
+| Python | 3.13.2, set by `PYTHON_VERSION` |
+| Environment | `GEMINI_API_KEY` (typed into Render's dashboard, never committed), `AI201_CACHE=0`, `PYTHON_VERSION=3.13.2`. Render sets `PORT`, and gunicorn binds to it |
+| Model files | None: the model is called over the API |
+
+Without a Blueprint, the same values work as a hand-made service: New → Web
+Service → this repo, branch `dev` → Python 3 → the build and start commands
+above → instance type Free → the three environment variables.
+
+```bash
+curl https://<your-service>.onrender.com/health
+curl -X POST https://<your-service>.onrender.com/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "vintage graphic tee under $30"}'
+curl 'https://<your-service>.onrender.com/log?n=5'
+```
+
+After 15 quiet minutes the first request takes about a minute, because the
+instance is waking up. The log file is wiped when it sleeps, so copy what you
+need the same day, from `GET /log` or from Render's Logs tab (which keeps
+stdout).
+
+### Local
+
+From a fresh clone, with Python 3.11 to 3.13 (3.13.2 tested):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # then paste your key into .env
+AI201_CACHE=0 PORT=5001 python serve.py
+```
+
+It listens on `http://localhost:5001` and appends to
+`results/serve_log.jsonl`. The same three `curl`s work against it.
+- **Why port 5001:** on a Mac, the AirPlay Receiver already listens on
+  `serve.py`'s default port, 5000. A `curl` there gets a 403 from macOS,
+  which looks like a broken server.
+- **Why `AI201_CACHE=0`:** it turns the cache off, so repeat queries are
+  real runs with real token counts.
+- **In PowerShell:** run `$env:AI201_CACHE="0"; $env:PORT="5001"` first.
+
+### Measuring either one
+
+```bash
+python measure.py https://<your-service>.onrender.com --label hosted
+python measure.py http://localhost:5001 --label local
+```
+
+It sends ten matching queries and two the server should turn away, one at a
+time, which costs 20 model calls. It writes
+`results/measure_<label>_<time>.md`, with every request, the server's record
+of it, and the averages.
 
 ---
 
@@ -166,6 +238,8 @@ the point of the session.
 | `trace.py` | The trace helper, and the loop's stop condition |
 | `app.py` | The command line |
 | `serve.py` | The same agent over HTTP, for deploying — **unit 9** |
+| `render.yaml` | How it gets onto Render: build, start command, environment — **unit 9** |
+| `measure.py` | Times requests against a running server and saves them with its log records — **unit 9** |
 | `mcp_server.py` | Your MCP server — **unit 4, you register the tool** |
 | `mcp_client.py` | Calling an MCP tool from your agent. Given to you |
 | `scenarios.py` | What your test runs. **You fill this in** |
