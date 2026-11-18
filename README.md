@@ -1792,3 +1792,69 @@ off, and made 46 model calls.
 ---
 
 📖 **How to run this project: [RUNNING.md](RUNNING.md)**
+
+---
+
+## Capstone
+
+Unit 9. Everything above this heading is from units 3 and 4 and stays as it
+was. Everything this unit asks for is below it.
+
+**What This Extends**
+
+FitFindr, the agent from units 3 and 4. It searches 40 secondhand listings
+(`search_listings`, over MCP), checks the price (`compare_price`, over MCP),
+and asks the model for an outfit (`suggest_outfit`) and a caption
+(`create_fit_card`). Until now it only ran on my laptop, one command at a
+time (`python app.py ask`, `run_eval.py`).
+
+What's new:
+- **It runs on a host with a URL:** `serve.py` under gunicorn, on Render's
+  free tier.
+- **Every `/ask` request writes one structured log record** (one JSON
+  line), including requests that are rejected or crash. Each record holds
+  when the request came in, the query, the status, what came out, the
+  error, how long it took, how long it waited its turn, and the model calls
+  and tokens it used.
+- **The records can be read back three ways:** `results/serve_log.jsonl` on
+  the machine running it, the host's log viewer (stdout), and `GET /log`.
+
+**The Shape**
+
+**A: deploy and instrument.** The agent already works. What it lacked was
+the operational layer around it: a run path that isn't my editor, a record
+of every request, and numbers that come out of that record. The cost per
+run is measured from the logged token counts, not from the pricing page.
+
+Out of scope. I considered these and decided against them:
+- **Changing what the agent does.** `agent.py`, `tools.py` and the MCP
+  server stay as they are, so anything the log shows comes from running the
+  agent, not from new behavior.
+- **A log that outlives the free host.** No database and no log drain. The
+  free instance wipes its files when it sleeps, so I copy the records into
+  the repo the same day I make them.
+- **More than one request at a time.** It stays one at a time, as
+  `serve.py` ships: one sync worker and the lock. A real queue, or more
+  workers on a 512 MB instance, would be a different project.
+
+**Stretch Features**
+
+Declared here before any of them is built. The first two are built
+alongside the milestones they belong to. The last two come after
+Milestone 7.
+
+1. **A latency breakdown.** Every log record also carries how many
+   milliseconds each stage took: `search_listings` and `compare_price` over
+   MCP, `suggest_outfit`, and `create_fit_card`. They're timed in `serve.py`
+   around the agent's calls, without changing `agent.py`. The README will
+   give the numbers and say which stage dominates. Built in Milestone 2,
+   with the logging.
+2. **Both run paths.** Hosted on Render, and documented as a local run
+   (`python serve.py`), with a note on what differed between them: setup,
+   latency, cost or behavior. Built in Milestone 3.
+3. **A second measured improvement.** A second change drawn from the
+   diagnosis, with a third run log in the same format and a statement of
+   whether it helped.
+4. **A load observation.** The hosted service run at about ten times its
+   normal request rate, with what changed: latency, errors, cost, or
+   nothing.
