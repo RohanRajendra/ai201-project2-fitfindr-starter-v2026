@@ -1,8 +1,11 @@
 # AI201 — pinned with BOTH lower and upper bounds, on purpose.
 #
 # An unpinned upper bound published a breaking release mid-term last year and
-# took a live class demo down with it. Don't loosen these, and don't run
-# `pip install --upgrade` inside this project's virtual environment.
+# took a live class demo down with it. Don't loosen these, and don't upgrade
+# the packages in this file inside the project's virtual environment.
+#
+# Upgrading pip itself is a different thing and the setup page asks you to do
+# it: `python -m pip install --upgrade pip`.
 #
 # Supported Python: 3.11, 3.12, or 3.13. NOT 3.14 — it ships as the default on
 # recent macOS versions and several of these packages don't support it yet.
@@ -22,3 +25,9 @@ flask>=3.0,<4.0
 # How a host runs serve.py: `gunicorn serve:app`. Also unit 9 — nothing before
 # then uses it, and you never need to run it on your own machine.
 gunicorn>=21.2,<24.0
+
+# The CA bundle every HTTPS call above verifies against. It arrives as a
+# transitive dependency, so it is pinned forward here to stop a cached older
+# wheel from satisfying this file. Anything before 2026.10.19 still trusts the
+# revoked emSign intermediates.
+certifi>=2026.10.19
