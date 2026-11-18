@@ -12,11 +12,12 @@ same `run_agent()` your CLI calls. **No new agent logic lives here.** If your
 loop works from `python app.py ask`, it works from here; if it doesn't, fix it
 there, not in this file.
 
-Two routes:
+Three routes:
 
     POST /ask       {"query": "vintage graphic tee under $30",
                      "wardrobe": {...}}     ← wardrobe is optional
     GET  /health    is it awake?
+    GET  /log?n=20  the last n log records, one JSON line each
 
 `/ask` returns the session dict from `run_agent()` as JSON, unchanged — the
 same keys you print from the command line, including `error`. Read
@@ -167,6 +168,19 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.get("/log")
+def log():
+    """
+    The last n lines of the log file, exactly as stored (one JSON record per
+    line, oldest first): ?n=20 by default, at most 500. A free host wipes the
+    file when it sleeps, so copy what you need the same day. Reading the log
+    isn't a run, so it isn't logged.
+    """
+    n = max(1, min(request.args.get("n", default=20, type=int), 500))
+    lines = LOG_FILE.read_text(encoding="utf-8").splitlines()[-n:] if LOG_FILE.exists() else []
+    return app.response_class("".join(line + "\n" for line in lines), mimetype="text/plain")
+
+
 @app.post("/ask")
 def ask():
     """
@@ -190,7 +204,7 @@ def ask():
     }
     try:
         body, record["status"] = _answer(record)
-        return jsonify(body), record["status"]
+        return jsonify(body), record["status"], {"X-Request-Id": record["request_id"]}
     except BaseException as exc:  # a crash, or the worker stopped mid-run
         record["status"] = 500 if isinstance(exc, Exception) else None
         record["outcome"], record["error"] = "crashed", f"{type(exc).__name__}: {exc}"
