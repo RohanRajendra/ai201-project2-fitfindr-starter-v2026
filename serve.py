@@ -48,8 +48,8 @@ import config
 
 from flask import Flask, jsonify, request
 
+import agent
 import generate
-from agent import run_agent
 from utils.data_loader import get_example_wardrobe
 
 app = Flask(__name__)
@@ -72,6 +72,10 @@ app = Flask(__name__)
 #   model_calls   this run's share of generate.py's running totals: the count
 #   tokens_in     after the run minus the count before. Retries count as
 #   tokens_out    calls; cached answers cost nothing, so they add nothing.
+#   stages_ms     ms per stage, summed over repeat calls: search_listings and
+#                 compare_price (MCP: each call starts mcp_server.py as a new
+#                 process), suggest_outfit and create_fit_card (the model).
+#                 duration_ms - waited_ms - these = everything else.
 
 LOG_FILE = config.RESULTS_DIR / "serve_log.jsonl"
 
@@ -89,6 +93,30 @@ def _log(record: dict) -> None:
             f.write(line + "\n")
     except OSError as exc:  # a full disk shouldn't cost the user their answer
         print(f"  [serve] couldn't write {LOG_FILE}: {exc}", file=sys.stderr, flush=True)
+
+
+# ── per-stage timing (stretch: the latency breakdown) ─────────────────────────
+# agent.py looks these names up each time it calls them, so wrapping its module
+# attributes times every call without changing a line of agent.py. Only this
+# server process is affected. One run at a time (the lock), so one dict.
+
+_stage_ms: dict[str, int] = {}
+
+
+def _timed(fn, stage=None):
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            name = stage or kwargs.get("name") or args[0]  # call_tool(name, arguments)
+            _stage_ms[name] = _stage_ms.get(name, 0) + _ms(start)
+    return wrapper
+
+
+agent.call_tool = _timed(agent.call_tool)
+agent.suggest_outfit = _timed(agent.suggest_outfit, "suggest_outfit")
+agent.create_fit_card = _timed(agent.create_fit_card, "create_fit_card")
 
 
 # ── one request at a time ─────────────────────────────────────────────────────
@@ -158,7 +186,7 @@ def ask():
         "request_id": uuid.uuid4().hex[:8], "route": "/ask", "status": None,
         "query": None, "outcome": None, "item": None, "error": None,
         "duration_ms": None, "waited_ms": 0,
-        "model_calls": 0, "tokens_in": 0, "tokens_out": 0,
+        "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {},
     }
     try:
         body, record["status"] = _answer(record)
@@ -215,15 +243,17 @@ def _answer(record: dict) -> tuple[dict, int]:
     with _one_at_a_time:
         record["waited_ms"] = _ms(queued)
         calls, tokens = generate.call_count(), generate.token_counts()
+        _stage_ms.clear()
         try:
-            session = run_agent(query, wardrobe)
+            session = agent.run_agent(query, wardrobe)
         except Exception as exc:  # noqa: BLE001 — a 500 with a sentence beats a hang
             failure = f"{type(exc).__name__}: {exc}"
-        finally:  # this run's share of the running totals
+        finally:  # this run's share of the running totals, and its stages
             spent = generate.token_counts()
             record["model_calls"] = generate.call_count() - calls
             record["tokens_in"] = spent["prompt"] - tokens["prompt"]
             record["tokens_out"] = spent["output"] - tokens["output"]
+            record["stages_ms"] = dict(_stage_ms)
 
     # Outside the lock: building a response is not work the next caller should
     # be waiting on.
