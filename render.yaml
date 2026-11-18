@@ -1,0 +1,21 @@
+# How FitFindr gets onto Render (unit 9). Render reads this file when you
+# create a Blueprint from the repo: New → Blueprint → this repo, branch dev.
+# It asks for GEMINI_API_KEY; nothing secret is in this file.
+services:
+  - type: web
+    name: fitfindr
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # One sync worker, never gevent or uvicorn: serve.py explains why. The
+    # timeout is 120 s, not gunicorn's default of 30 s, because one run can
+    # outlast 30 s while generate.py waits out the per-minute limit, and
+    # gunicorn kills a worker it thinks is stuck.
+    startCommand: gunicorn serve:app --workers 1 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.2
+      - key: AI201_CACHE   # cache off, so every run is a real, measured run
+        value: "0"
+      - key: GEMINI_API_KEY
+        sync: false        # Render asks for it; paste it into the dashboard
