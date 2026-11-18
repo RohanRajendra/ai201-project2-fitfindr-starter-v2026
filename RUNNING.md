@@ -166,9 +166,9 @@ Capstone section says what each record holds.
 
 | | |
 |---|---|
-| URL | _filled in after the first deploy_ |
+| URL | **https://fitfindr-am5n.onrender.com** |
 | Platform | Render, free web service: 512 MB, and it sleeps after 15 idle minutes |
-| How it got there | `render.yaml` as a Blueprint: New → Blueprint → this repo, branch `dev` → paste `GEMINI_API_KEY` when asked → Apply. Every push to `dev` redeploys it |
+| How it got there | `render.yaml` as a Blueprint: New → Blueprint → this repo, branch `main` → paste `GEMINI_API_KEY` when asked → Apply. The first build took 1 min 4 s. Every merge to `main` redeploys it; work on `dev` reaches the host only when it's merged |
 | Build | `pip install -r requirements.txt` (versions pinned there) |
 | Start | `gunicorn serve:app --workers 1 --timeout 120` (`render.yaml` says why) |
 | Python | 3.13.2, set by `PYTHON_VERSION` |
@@ -176,15 +176,15 @@ Capstone section says what each record holds.
 | Model files | None: the model is called over the API |
 
 Without a Blueprint, the same values work as a hand-made service: New → Web
-Service → this repo, branch `dev` → Python 3 → the build and start commands
+Service → this repo, branch `main` → Python 3 → the build and start commands
 above → instance type Free → the three environment variables.
 
 ```bash
-curl https://<your-service>.onrender.com/health
-curl -X POST https://<your-service>.onrender.com/ask \
+curl https://fitfindr-am5n.onrender.com/health
+curl -X POST https://fitfindr-am5n.onrender.com/ask \
   -H 'Content-Type: application/json' \
   -d '{"query": "vintage graphic tee under $30"}'
-curl 'https://<your-service>.onrender.com/log?n=5'
+curl 'https://fitfindr-am5n.onrender.com/log?n=5'
 ```
 
 After 15 quiet minutes the first request takes about a minute, because the
@@ -216,7 +216,7 @@ It listens on `http://localhost:5001` and appends to
 ### Measuring either one
 
 ```bash
-python measure.py https://<your-service>.onrender.com --label hosted
+python measure.py https://fitfindr-am5n.onrender.com --label hosted
 python measure.py http://localhost:5001 --label local
 ```
 
