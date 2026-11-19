@@ -22,6 +22,11 @@
 > - `python run_eval.py --label <name>` runs the five-tries test. That costs
 >   about 45 model calls, so mind a free-tier key.
 >
+> Unit 9 (capstone) additions:
+> - It's hosted at **https://fitfindr-am5n.onrender.com**.
+> - `python serve.py` runs the same thing locally (RUNNING.md has both).
+> - Every request is logged. The Capstone section at the end has the rest.
+>
 > **The rest of this file is your submission.** Fill it in as you go.
 
 ---
@@ -1858,3 +1863,283 @@ Milestone 7.
 4. **A load observation.** The hosted service run at about ten times its
    normal request rate, with what changed: latency, errors, cost, or
    nothing.
+
+**Running It**
+
+Path A, hosted: **https://fitfindr-am5n.onrender.com**. It's a free web
+service on Render, deployed from `render.yaml` as a Blueprint on the `main`
+branch, so a merge to `main` redeploys it. It also runs locally from one
+command (stretch 2, below). [RUNNING.md](RUNNING.md), under "Capstone: where
+it runs", has both: the URL and how it got there, the build and start
+commands, the environment and Python version, and the local steps.
+
+Checking the local steps turned up one problem: `serve.py` listens on port
+5000 by default, and on a Mac the AirPlay Receiver already listens there and
+answers a `curl` with a 403. RUNNING.md now uses port 5001 and says why. With
+that change, a fresh clone of the GitHub repo ran as written: venv,
+`pip install`, `.env` (I linked the existing one instead of pasting the key
+again), the server, `curl`, and the measured run below.
+
+**Both Run Paths (stretch 2)**
+
+The same code and the same twelve requests (`measure.py`), one at a time,
+with the cache off, on 2026-11-18. The reports are
+`results/measure_hosted_2026-11-18_1826.md` and
+`results/measure_local_2026-11-18_1828.md`.
+
+| | Hosted (Render free tier) | Local (my Mac) |
+|---|---|---|
+| Setup | Render signup, a Blueprint from `render.yaml`, the key pasted into the dashboard. First build: 1 min 4 s | A fresh clone, venv, `pip install`, `.env`, and port 5001 instead of 5000 |
+| Server | gunicorn, one sync worker | Flask's development server |
+| Time per completed run: median (mean) | 10.1 s (11.7 s) | 3.6 s (7.5 s) |
+| Slowest run, and why | 25.6 s: the first request after the deploy (first MCP process 9.1 s, first model call 8.6 s) | 37.4 s: one `create_fit_card` call took 35.6 s at the model, with no retry |
+| One MCP call (search or price) | about 4 s | about 0.5 s |
+| Tokens per run | 728 in, 185 out | 723 in, 180 out |
+| Waking up after 15 idle minutes | 17.3 s for `GET /health` (a warm one: 0.27 s). The log was empty afterwards: the twelve records below survive only because `measure.py` saved them | Never needed: it doesn't sleep |
+| A second request sent while one runs (two impossible queries at once, 0 model calls) | The second client waited 22.6 s, but its record says `duration_ms` 9,192 and `waited_ms` 0, and its `ts` is 13 s late: gunicorn's one sync worker holds it before `serve.py` sees it | The second record shows `waited_ms` 1,388 of its 2,345 ms, matching its client's 2.35 s: Flask's server hands it to `serve.py`, which waits on the lock |
+| The log file | Wiped when the instance sleeps; stdout stays in Render's Logs tab | Stays on disk |
+| Outcomes | 10 fit cards, the 400, the crash 500 | The same |
+
+What differed is how long a run takes, not what comes out. A typical run on
+the host takes about three times as long, and almost all of the difference
+is the two MCP calls (see the latency breakdown). The tokens, and so the
+cost, are the same, because the prompts are the same.
+
+**Instrumentation**
+
+Each `/ask` request writes one record, whatever happens to it: a run that
+finishes, a run that stops early, a 400, or a crash. The record goes to three
+places: stdout (Render's Logs tab keeps it), `results/serve_log.jsonl` on the
+machine running it, and `GET /log?n=` (the file's last n lines).
+`serve.py::ask` writes it, in a `finally` around the route.
+
+| Field | What it holds |
+|---|---|
+| `ts`, `request_id`, `route` | When it came in (UTC), a short id (also sent back as `X-Request-Id`), and `/ask` |
+| `query` | **What came in:** the `query` field, or the raw body when there isn't one |
+| `status`, `outcome`, `item`, `error` | **What came out:** the HTTP status; `fit_card`, `stopped`, `rejected` or `crashed`; the listing it picked; the error text |
+| `duration_ms`, `waited_ms` | **How long:** arrival to response, and the part of that spent waiting for the one-at-a-time lock |
+| `model_calls`, `tokens_in`, `tokens_out` | This run's share of `generate.py`'s running totals: the count after the run minus the count before |
+| `stages_ms` | Milliseconds per stage: `search_listings` and `compare_price` (both over MCP), `suggest_outfit` and `create_fit_card` (the model) |
+
+Here are twelve records from the hosted service, exactly as `GET /log`
+returned them, from `results/measure_hosted_2026-11-18_1826.md`
+(`measure.py::main`). The first ten are matching queries. The last two are
+failures:
+- **An empty query:** rejected, 400.
+- **A JSON list body:** crashed, 500. `serve.py` assumes the body is a
+  dict, and the log records that bug rather than fixing it.
+
+```jsonl
+{"ts": "2026-11-18T23:24:14.292+00:00", "request_id": "ae98d068", "route": "/ask", "status": 200, "query": "vintage graphic tee under $30", "outcome": "fit_card", "item": "Vintage Band Tee — Faded Grey ($19.0, depop)", "error": null, "duration_ms": 25623, "waited_ms": 0, "model_calls": 2, "tokens_in": 726, "tokens_out": 188, "stages_ms": {"search_listings": 9110, "compare_price": 3907, "suggest_outfit": 8579, "create_fit_card": 4025}}
+{"ts": "2026-11-18T23:24:40.042+00:00", "request_id": "b54c2876", "route": "/ask", "status": 200, "query": "90s track jacket in size M", "outcome": "fit_card", "item": "90s Track Jacket — Navy/White Stripe ($45.0, poshmark)", "error": null, "duration_ms": 12404, "waited_ms": 0, "model_calls": 2, "tokens_in": 724, "tokens_out": 184, "stages_ms": {"search_listings": 3961, "compare_price": 4211, "suggest_outfit": 3533, "create_fit_card": 699}}
+{"ts": "2026-11-18T23:24:53.028+00:00", "request_id": "58d7503c", "route": "/ask", "status": 200, "query": "silk slip dress in midi length under $40", "outcome": "fit_card", "item": "90s Silk Slip Dress — Floral, Midi Length ($30.0, depop)", "error": null, "duration_ms": 9835, "waited_ms": 0, "model_calls": 2, "tokens_in": 771, "tokens_out": 218, "stages_ms": {"search_listings": 3883, "compare_price": 4098, "suggest_outfit": 950, "create_fit_card": 904}}
+{"ts": "2026-11-18T23:25:03.019+00:00", "request_id": "dbd97c03", "route": "/ask", "status": 200, "query": "platform sneakers size 8", "outcome": "fit_card", "item": "Platform Sneakers — White Chunky Sole ($48.0, poshmark)", "error": null, "duration_ms": 10126, "waited_ms": 0, "model_calls": 2, "tokens_in": 712, "tokens_out": 180, "stages_ms": {"search_listings": 4080, "compare_price": 4206, "suggest_outfit": 995, "create_fit_card": 844}}
+{"ts": "2026-11-18T23:25:13.266+00:00", "request_id": "2b53e9cf", "route": "/ask", "status": 200, "query": "denim jacket under $50", "outcome": "fit_card", "item": "Denim Jacket — Light Wash, Cropped ($42.0, poshmark)", "error": null, "duration_ms": 9410, "waited_ms": 0, "model_calls": 2, "tokens_in": 726, "tokens_out": 180, "stages_ms": {"search_listings": 3839, "compare_price": 3909, "suggest_outfit": 816, "create_fit_card": 845}}
+{"ts": "2026-11-18T23:25:23.025+00:00", "request_id": "836562a2", "route": "/ask", "status": 200, "query": "chunky knit cardigan", "outcome": "fit_card", "item": "Knit Cardigan — Chunky Brown ($35.0, depop)", "error": null, "duration_ms": 10018, "waited_ms": 0, "model_calls": 2, "tokens_in": 748, "tokens_out": 199, "stages_ms": {"search_listings": 4069, "compare_price": 4106, "suggest_outfit": 1137, "create_fit_card": 705}}
+{"ts": "2026-11-18T23:25:33.184+00:00", "request_id": "38e2d0f1", "route": "/ask", "status": 200, "query": "cargo pants under $30", "outcome": "fit_card", "item": "Low-Rise Cargo Pants — Khaki ($27.0, poshmark)", "error": null, "duration_ms": 9229, "waited_ms": 0, "model_calls": 2, "tokens_in": 715, "tokens_out": 162, "stages_ms": {"search_listings": 3810, "compare_price": 3906, "suggest_outfit": 962, "create_fit_card": 549}}
+{"ts": "2026-11-18T23:25:42.562+00:00", "request_id": "02cc7241", "route": "/ask", "status": 200, "query": "y2k baby tee", "outcome": "fit_card", "item": "Y2K Baby Tee — Butterfly Print ($18.0, depop)", "error": null, "duration_ms": 9899, "waited_ms": 0, "model_calls": 2, "tokens_in": 724, "tokens_out": 181, "stages_ms": {"search_listings": 4246, "compare_price": 4001, "suggest_outfit": 943, "create_fit_card": 707}}
+{"ts": "2026-11-18T23:25:52.853+00:00", "request_id": "ab283328", "route": "/ask", "status": 200, "query": "corduroy pants", "outcome": "fit_card", "item": "Corduroy Wide-Leg Pants — Rust ($32.0, depop)", "error": null, "duration_ms": 10328, "waited_ms": 0, "model_calls": 2, "tokens_in": 708, "tokens_out": 160, "stages_ms": {"search_listings": 4560, "compare_price": 3813, "suggest_outfit": 1173, "create_fit_card": 699}}
+{"ts": "2026-11-18T23:26:03.324+00:00", "request_id": "39a04dfb", "route": "/ask", "status": 200, "query": "mini shoulder bag", "outcome": "fit_card", "item": "Mini Shoulder Bag — Tan Leather ($38.0, poshmark)", "error": null, "duration_ms": 10596, "waited_ms": 0, "model_calls": 2, "tokens_in": 721, "tokens_out": 197, "stages_ms": {"search_listings": 4071, "compare_price": 4407, "suggest_outfit": 921, "create_fit_card": 1196}}
+{"ts": "2026-11-18T23:26:14.062+00:00", "request_id": "7c2534fd", "route": "/ask", "status": 400, "query": "", "outcome": "rejected", "item": null, "error": "Send JSON with a 'query' field, e.g. {\"query\": \"vintage graphic tee under $30\"}", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+{"ts": "2026-11-18T23:26:14.182+00:00", "request_id": "7f468d3b", "route": "/ask", "status": 500, "query": "[1, 2]", "outcome": "crashed", "item": null, "error": "AttributeError: 'list' object has no attribute 'get'", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+```
+
+**Latency Breakdown (stretch 1)**
+
+These numbers come from the `stages_ms` of the hosted records above. The
+first request after the deploy is shown on its own; the other nine are warm.
+
+| Stage | Warm runs (9): mean | Share of the run | First run after the deploy |
+|---|---|---|---|
+| `search_listings` (MCP) | 4.06 s | 40% | 9.11 s |
+| `compare_price` (MCP) | 4.07 s | 40% | 3.91 s |
+| `suggest_outfit` (model) | 1.27 s | 12% | 8.58 s |
+| `create_fit_card` (model) | 0.79 s | 8% | 4.03 s |
+| Everything else | 0.01 s | 0% | 0.00 s |
+| Total (`duration_ms`) | 10.21 s | | 25.62 s |
+
+**On the host, the MCP stages dominate: 80% of a warm run.**
+- **Why:** each `call_tool` starts `mcp_server.py` as a new Python process,
+  and that process imports the MCP library and the tools before it does any
+  work.
+- **Measured on my Mac:** that import takes 0.5 s, while a bare Python start
+  takes 0.02 s. The search itself is plain code over 40 listings.
+- **On Render's free-tier CPU:** the same start takes about 4 s.
+- **The model:** the two model calls together take about 2 s.
+- **Locally, the picture flips:** MCP is 14% of a run and the model 86%.
+
+**What It Costs**
+
+**Measured per run** (the mean of the ten hosted runs above, cache off):
+**727.5 input tokens and 184.9 output tokens, from 2 model calls.** The ten
+local runs came to 722.9 and 179.6.
+
+How I measured it:
+- `generate.py` adds up the token counts the API reports on every response
+  (`usage_metadata`).
+- `serve.py` reads that total before and after each run, and logs the
+  difference as `tokens_in` and `tokens_out`.
+- `measure.py` sent ten matching queries to the hosted service with the
+  cache off (`AI201_CACHE=0`), and I averaged the ten records.
+- To check that these counts are what Google bills, I looked at one call's
+  full usage. It had no thinking tokens (`thoughts_token_count` was empty),
+  and the total was exactly input plus output.
+
+**In dollars**, at Gemini 3.5 Flash-Lite's paid-tier price on Google's pricing
+page (checked 2026-11-18): $0.30 per million input tokens, and $2.50 per
+million output tokens, thinking included.
+
+```
+input:   727.5 × $0.30 / 1,000,000 = $0.000218
+output:  184.9 × $2.50 / 1,000,000 = $0.000462
+one run                            = $0.000680
+```
+
+**A hundred people a day, one query each:**
+
+```
+model:    100 runs × $0.000680 = $0.068 a day   (× 30 = $2.04 a month)
+quota:    100 runs × 2 calls   = 200 model requests a day
+compute:  100 runs × 10.2 s    = 1,020 s, about 17 minutes of the instance a day
+```
+
+**What I actually pay is $0.** My key is on the free tier, and Render's free
+instance costs nothing. The free tier's real limit is 500 model requests a
+day, which is 250 runs:
+- A hundred people asking once each fits: 200 requests.
+- A hundred people asking three times each doesn't: 300 runs is 600
+  requests. That would need the paid tier, at 300 × $0.000680 = $0.20 a
+  day.
+
+**Run Log and Verdicts**
+
+The before run is three trials against the hosted service, following the
+"One trial" steps in `criteria.md`. It ran on 2026-11-18 from `trials.py::main`
+and cost 32 model calls. The full output, with every request and every log
+record, is in `results/capstone_before_2026-11-18_1940.md`.
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Warm runs return a fit card in under 8 s | 4 of 5, 3 of 3 trials | 0/5 | 0/5 | 0/5 | MISSED |
+| 2. A malformed request gets a 400 | 5 of 5, 3 of 3 trials | 2/5 | 2/5 | 2/5 | MISSED |
+| 3. The log's time matches the wait when requests overlap | 2 of 2, 3 of 3 trials | 1/2 | 1/2 | 1/2 | MISSED |
+| 4. Every request leaves one matching record | all, 3 of 3 trials | 13/13 | 12/12 | 12/12 | MET |
+| 5. 2 model calls, mean cost ≤ $0.0008 | 5 of 5 and mean ≤ $0.0008, 3 of 3 trials | 5/5, $0.000630 | 5/5, $0.000671 | 5/5, $0.000665 | MET |
+
+Real output follows, from trial 3 unless a line says otherwise. The client
+times come from `trials.py::curl`. The records come from `serve.py::ask`,
+read back through `GET /log`.
+
+**Criterion 1.** Client times for the five runs were 8.9–10.4 s across all three
+trials, so no run came in under 8 s. A typical record:
+```jsonl
+{"ts": "2026-11-19T00:39:12.200+00:00", "request_id": "39947acb", "route": "/ask", "status": 200, "query": "90s track jacket in size M", "outcome": "fit_card", "item": "90s Track Jacket — Navy/White Stripe ($45.0, poshmark)", "error": null, "duration_ms": 8972, "waited_ms": 0, "model_calls": 2, "tokens_in": 721, "tokens_out": 162, "stages_ms": {"search_listings": 3656, "compare_price": 3703, "suggest_outfit": 936, "create_fit_card": 676}}
+```
+
+**Criterion 2.** The same three bodies failed in all three trials:
+
+| Body | Status | X-Request-Id |
+|---|---|---|
+| `[1, 2]` | 500, HTML page | none |
+| `{"query": 42}` | 500, HTML page | none |
+| `"vintage tee"` | 500, HTML page | none |
+| `{"query": ""}` | 400, JSON `error` | yes |
+| `not json` | 400, JSON `error` | yes |
+
+Two of the crash records:
+```jsonl
+{"ts": "2026-11-19T00:39:57.968+00:00", "request_id": "3231ba60", "route": "/ask", "status": 500, "query": "[1, 2]", "outcome": "crashed", "item": null, "error": "AttributeError: 'list' object has no attribute 'get'", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+{"ts": "2026-11-19T00:39:58.129+00:00", "request_id": "d4ffa0db", "route": "/ask", "status": 500, "query": 42, "outcome": "crashed", "item": null, "error": "AttributeError: 'int' object has no attribute 'strip'", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+```
+
+**Criterion 3.** Both requests were sent at the same moment. The ballgown
+client took 7,843 ms and the wetsuit client 15,538 ms. Their records:
+```jsonl
+{"ts": "2026-11-19T00:39:58.955+00:00", "request_id": "9c1be737", "route": "/ask", "status": 200, "query": "designer ballgown size XXS under $5", "outcome": "stopped", "item": null, "error": "Nothing in the listings matches 'designer ballgown' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, nothing is listed under $5 (the cheapest listing is $12), and no listing comes in size XXS.", "duration_ms": 7691, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {"search_listings": 7608}}
+{"ts": "2026-11-19T00:40:06.646+00:00", "request_id": "9a9c7601", "route": "/ask", "status": 200, "query": "wetsuit size XXS", "outcome": "stopped", "item": null, "error": "Nothing in the listings matches 'wetsuit' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, no listing comes in size XXS.", "duration_ms": 7699, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {"search_listings": 7613}}
+```
+The wetsuit record says 7,699 ms, but its client waited 15,538 ms, so 7,839 ms is
+missing from the log. Its `ts` is 7.7 s after the moment it was sent. All three
+trials looked the same: 7,375–8,091 ms was missing each time.
+
+**Criterion 4.** Each trial's records lined up one for one with the requests
+sent: 13 in trial 1, which had a warm-up, and 12 in trials 2 and 3. Every
+`status` matched what the client saw, including the three HTML 500s. The
+trial 3 records, in order:
+
+| Part | Statuses |
+|---|---|
+| Criterion 1 | 200 ×5 |
+| Criterion 2 | 500, 500, 500, 400, 400 |
+| Criterion 3 | 200, 200 |
+
+**Criterion 5.** Every criterion 1 record showed `model_calls` 2. The mean cost
+per trial was $0.000630, $0.000671 and $0.000665. The most expensive single
+run cost $0.000746 (chunky knit cardigan: 745 tokens in, 209 out), under the
+$0.0010 per-run cap.
+
+**Verdicts and diagnoses (before run)**
+
+- **1. MISSED (0/5 in every trial): `mcp_client.call_tool`, run twice per
+  request on Render's free CPU.**
+  - The runs took 8.9–10.4 s. The two MCP stages alone took 7.1–8.5 s of
+    that, and the model only 1.3–2.2 s.
+  - Each `call_tool` starts `mcp_server.py` as a new Python process, and
+    that process imports the MCP SDK before it does anything. That takes
+    0.53 s on my Mac and about 3.7 s on the host.
+  - The mechanism: latency scales with process starts (two per run), not
+    with the work. The search itself is plain code over 40 listings.
+- **2. MISSED (2/5 in every trial): `serve.py::_answer`, the body
+  parsing.**
+  - The code assumes the JSON body is a dict holding a string. A list or a
+    bare string fails on `.get`, and a number fails on `.strip`.
+  - The `AttributeError` escapes the route, so Flask answers with its own
+    HTML 500. That page has no `X-Request-Id`, so nobody can find its record
+    in the log.
+- **3. MISSED (1/2 in every trial): gunicorn's single sync worker, from the
+  start command in `render.yaml`.**
+  - A sync worker accepts one connection at a time. The second request
+    waits in the socket queue, before Flask, so `serve.py`'s clock (and its
+    `ts`) starts only when the first request finishes.
+  - So the record is short by exactly the first request's run time:
+    7,375–8,091 ms, against first runs of 7.2–8.0 s. `waited_ms` stays 0,
+    because the lock is never contended.
+- **4. MET** and **5. MET.**
+  - The `finally` logged every request, including the three crashes per
+    trial.
+  - Every run made exactly 2 model calls, with a highest mean of $0.000671.
+  - Both have room: no retry and no worker kill happened in these 3 trials.
+    5's mean sits 16% under its cap.
+
+**The pattern:** 1 and 3 both come from the deploy layer, not the agent.
+Render's free CPU makes the per-call process start expensive (1), and
+gunicorn's default worker hides the queue from the app (3). Both were
+invisible on my Mac, where an MCP start costs 0.5 s and Flask's server is
+threaded. 2 is a plain input-handling bug in `serve.py`.
+
+**The Improvement**
+
+- **What I changed:** criterion 3's miss, by switching the start command in
+  `render.yaml` from `--workers 1` to `--workers 1 --threads 2`. I also
+  updated the comment in `serve.py` and the start-command row in RUNNING.md.
+- **Why:** with two threads, gunicorn accepts the second request at once.
+  It reaches `serve.py::ask`, which starts its clock, and then waits on the
+  one-at-a-time lock. `waited_ms` and `duration_ms` now include the wait
+  instead of missing it.
+- **What stays the same:**
+  - The lock still runs one agent at a time, so the 512 MB budget is the
+    same.
+  - A worker thread has no running event loop, so `mcp_client`'s
+    `asyncio.run()` still works (gevent would break it).
+- **Checked locally first** (gunicorn on my Mac, 0 model calls). Two
+  impossible queries sent at once:
+  - With one sync worker, the second client waited 3.31 s and its record
+    said 1,293 ms, with `waited_ms` 0.
+  - With `--threads 2`, the client waited 2.58 s and its record said
+    2,579 ms, with `waited_ms` 1,485.
+- **Why this miss and not the others:** it's the log's own truthfulness,
+  which is what this unit added. The change is one line, and it follows
+  directly from the diagnosis. Criterion 1's fix (keeping one MCP process
+  open) is a much bigger change to given plumbing, so it's in What's Still
+  Broken. Criterion 2's fix is the declared second improvement.
