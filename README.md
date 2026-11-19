@@ -2279,3 +2279,44 @@ fix.**
     before a run from the count after it, and `agent.py` stayed untouched.
   - I kept `/log` as the only optional piece, and recorded the other five as
     what Shape A requires.
+
+**Stretch: Second Improvement (criterion 2)**
+
+- **What I changed:** `serve.py::_answer` now treats anything that isn't a
+  JSON object holding a string `query` the same way as an empty query: a JSON
+  400 with an `error` and an `X-Request-Id`. It is three lines, following the
+  diagnosis that the code assumed a dict holding a string.
+- **The third run** (2026-11-18, `trials.py::main`, 32 model calls). Full
+  output in `results/capstone_third_2026-11-18_2215.md`.
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Warm runs return a fit card in under 8 s | 4 of 5, 3 of 3 trials | 0/5 | 0/5 | 0/5 | MISSED |
+| 2. A malformed request gets a 400 | 5 of 5, 3 of 3 trials | **5/5** | **5/5** | **5/5** | **MET** (was MISSED) |
+| 3. The log's time matches the wait when requests overlap | 2 of 2, 3 of 3 trials | 2/2 | 2/2 | 2/2 | MET |
+| 4. Every request leaves one matching record | all, 3 of 3 trials | 13/13 | 12/12 | 12/12 | MET |
+| 5. 2 model calls, mean cost ≤ $0.0008 | 5 of 5 and mean ≤ $0.0008, 3 of 3 trials | 5/5, $0.000673 | 5/5, $0.000662 | 5/5, $0.000695 | MET |
+
+The three bodies that used to crash, from trial 3:
+```jsonl
+{"ts": "2026-11-19T03:15:22.300+00:00", "request_id": "eb6d2def", "route": "/ask", "status": 400, "query": "[1, 2]", "outcome": "rejected", "item": null, "error": "Send JSON with a 'query' field, e.g. {\"query\": \"vintage graphic tee under $30\"}", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+{"ts": "2026-11-19T03:15:22.466+00:00", "request_id": "8f5333fd", "route": "/ask", "status": 400, "query": 42, "outcome": "rejected", "item": null, "error": "Send JSON with a 'query' field, e.g. {\"query\": \"vintage graphic tee under $30\"}", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+{"ts": "2026-11-19T03:15:22.615+00:00", "request_id": "78bf6f5f", "route": "/ask", "status": 400, "query": "\"vintage tee\"", "outcome": "rejected", "item": null, "error": "Send JSON with a 'query' field, e.g. {\"query\": \"vintage graphic tee under $30\"}", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+```
+
+**Did it help?**
+- **Yes.** Criterion 2 went from 2/5 to 5/5 in every trial, and all five
+  bodies now carry a request id that leads to their record.
+- **What it cost:** nothing seen. The other four criteria kept their
+  verdicts.
+- **One trade to be aware of:** the error message is the same for every bad
+  body, so a caller who sent `{"query": 42}` is told to send a `query`
+  field, not that the field must be text.
+- **A side result on the after run's slowdown:** this run still has the
+  threaded worker, yet criterion 1's median came back to 10.3 s (from
+  18.7 s), with model stages at a median of 1.8 s. That supports the probe:
+  the after run's slow model calls came from the service, not from
+  `--threads 2`.
+
+**What's still broken, updated:** only criterion 1 is still missed. What I'd
+do about it, and why I stopped, is unchanged (see What's Still Broken).
