@@ -143,3 +143,139 @@ key, so with the cache on a broken key can look like it works.
      A number you missed stays where it is, gets diagnosed, and gets a fix
      attempted. That's where the points are.
      ───────────────────────────────────────────────────────────────────────── -->
+
+---
+
+# Capstone criteria (unit 9)
+
+Written before any capstone test was run. All five are tested against the
+hosted service, https://fitfindr-am5n.onrender.com.
+
+**One trial**
+1. `GET /health` must answer in under 2 s. If it doesn't, wait 30 s and try
+   again, up to 5 times; if it still doesn't, start the trial later.
+2. Read `GET /log?n=500` and note the last record's `request_id`.
+3. If the log has no `fit_card` record yet, send one unscored warm-up:
+   `vintage graphic tee under $30`.
+4. Send criterion 1's requests, then criterion 2's, then criterion 3's.
+5. Read `GET /log?n=500` again.
+
+Send every request with
+`curl -s --max-time 150 -D headers.txt -o body.json -w '%{http_code} %{time_total}'`.
+That gives the status, the client time, and the `X-Request-Id` header. A
+`000` (no response) or a 502 from Render counts as a failed request. Wait
+60 s between trials. Each target must hold in **3 of 3 trials**.
+
+## 1. Warm runs return a fit card in under 8 seconds
+
+Send these five queries one at a time:
+- `90s track jacket in size M`
+- `silk slip dress in midi length under $40`
+- `platform sneakers size 8`
+- `denim jacket under $50`
+- `chunky knit cardigan`
+
+A run passes if it returns 200, a non-blank `fit_card`, and a client time
+under 8.0 s. **Target: 4 of 5 runs.**
+
+**Why this target:**
+- On the host, the two MCP calls alone took 7.7–8.5 s in every warm run.
+  Each one starts a new Python process, which spends about 4 s importing the
+  MCP library.
+- The model calls take about 2 s. So 8 s can be met with one process start
+  per run, but not with two.
+- 10 s would sit right on today's median (10.3 s), so it would pass or fail
+  on noise.
+- It's 4 of 5, not 5 of 5, because one slow model call is the model's fault,
+  not the deploy's. One call took 35.6 s locally.
+
+## 2. A malformed request gets a 400, not a crash
+
+Send these five bodies, as JSON:
+- `[1, 2]`
+- `{"query": 42}`
+- `"vintage tee"`
+- `{"query": ""}`
+- `not json`
+
+Each must get a 400, a JSON body with a non-empty `error` message, and an
+`X-Request-Id` header. An HTML page fails. **Target: 5 of 5.**
+
+**Why this target:**
+- The check happens in plain code before the model is called, so the same
+  body always gets the same answer. Any miss is a bug, so the target is
+  5 of 5.
+- Today `serve.py` assumes the body is a dict holding a string, so the first
+  three crash into Flask's HTML 500 page.
+- That page blames the server for the caller's mistake, and it has no
+  request id to find in the log.
+- The last two already pass. They're included so that a fix for the first
+  three can't break them.
+
+## 3. The log's time matches the user's wait when two requests overlap
+
+Send `designer ballgown size XXS under $5` and `wetsuit size XXS` at the
+same moment (`curl … & curl … & wait`). Neither one calls the model.
+- **When to resend:** if the slower client's time is less than 1.5 times the
+  faster one's, the two didn't queue, so send the pair again (at most twice).
+  Only the last pair counts.
+- **How it's scored:** find both records by `X-Request-Id`. Both must return
+  200 with outcome `stopped`. For both, the client time minus `duration_ms`
+  must be at most 1,000 ms. (`duration_ms` includes `waited_ms`.)
+- **Target:** both requests pass in every trial.
+
+**Why this target:**
+- `waited_ms` exists so the log can tell "slow" apart from "waiting its
+  turn". Today it can't.
+- In Milestone 3, the second client waited 22.6 s, but its record said
+  9.2 s, with `waited_ms` 0. Gunicorn's single sync worker holds the request
+  before `serve.py` sees it.
+- Locally, the record matched the client.
+- 1,000 ms is about 2.5 times the normal network gap (0.13–0.38 s), so a
+  hidden wait stands out.
+- It's every trial, because whether the wait shows depends on the server
+  setup, not on chance.
+
+## 4. Every request leaves exactly one matching log record
+
+Take the records after the noted one. There must be exactly one per `/ask`
+sent: 12, plus 1 for a warm-up and 2 for each resent pair. More or fewer
+fails the trial.
+- **How to pair them:** in sending order (warm-up, criterion 1, criterion
+  2). Criterion 3's pair is matched by `X-Request-Id`.
+- **What matches:** a record's `status` must equal the status its client got.
+  A `000` or a 502 never matches.
+- **Target:** every request, in every trial.
+
+**Why this target:**
+- The record is written in a `finally`, so successes, rejections and
+  crashes are all logged by design.
+- A gap means something real went wrong: the 512 MB instance ran out of
+  memory, gunicorn's 120 s timeout killed the worker, or the instance
+  restarted and wiped the file.
+- The log is this unit's only evidence. The cost, the latency breakdown and
+  the README extracts all come from it, so not one request may go missing.
+
+## 5. Each run makes exactly 2 model calls and costs at most $0.0008 on average
+
+For criterion 1's five runs, find each record by `X-Request-Id`.
+- **The cost of a run:** `tokens_in` × $0.30 + `tokens_out` × $2.50, per
+  million tokens.
+- **What passes:** each record must show outcome `fit_card`, `model_calls`
+  exactly 2, and a cost of at most $0.0010. The five costs must average at
+  most $0.0008.
+- **What fails:** a run with no request id, no `fit_card`, or no token count.
+- **Target:** all five, in every trial.
+
+**Why this target:**
+- **The real limit is 500 model requests a day,** on a free key shared with
+  another project. A retry makes `model_calls` 3, which uses 50% more quota
+  than the README's arithmetic assumes. Retries are counted exactly, so the
+  call count must be exactly 2.
+- **Why cap the average:** the cost does vary, because output tokens change
+  at temperature 0.9. These five queries measured $0.00066–$0.00078 (mean
+  $0.00070).
+  - A $0.0008 average fails if output grows by about 21%, which is what a
+    longer caption would look like.
+  - A $0.0008 cap on each run would fail on noise: the silk slip dress
+    already costs $0.00078.
