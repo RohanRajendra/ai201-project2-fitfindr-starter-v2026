@@ -2143,3 +2143,55 @@ threaded. 2 is a plain input-handling bug in `serve.py`.
   directly from the diagnosis. Criterion 1's fix (keeping one MCP process
   open) is a much bigger change to given plumbing, so it's in What's Still
   Broken. Criterion 2's fix is the declared second improvement.
+
+**Run Log — After** (2026-11-18, `trials.py::main`, 32 model calls. Full output
+in `results/capstone_after_2026-11-18_2101.md`.)
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Warm runs return a fit card in under 8 s | 4 of 5, 3 of 3 trials | 0/5 | 0/5 | 0/5 | MISSED |
+| 2. A malformed request gets a 400 | 5 of 5, 3 of 3 trials | 2/5 | 2/5 | 2/5 | MISSED |
+| 3. The log's time matches the wait when requests overlap | 2 of 2, 3 of 3 trials | **2/2** | **2/2** | **2/2** | **MET** (was MISSED) |
+| 4. Every request leaves one matching record | all, 3 of 3 trials | 13/13 | 12/12 | 12/12 | MET |
+| 5. 2 model calls, mean cost ≤ $0.0008 | 5 of 5 and mean ≤ $0.0008, 3 of 3 trials | 5/5, $0.000683 | 5/5, $0.000680 | 5/5, $0.000688 | MET |
+
+Criterion 3, after, trial 3. The two requests now arrive together (their `ts`
+values are 4 ms apart). The one that queued records its wait: the client took
+17,771 ms, and the record shows `duration_ms` 17,623 with `waited_ms` 9,115.
+```jsonl
+{"ts": "2026-11-19T02:00:46.901+00:00", "request_id": "d7268185", "route": "/ask", "status": 200, "query": "wetsuit size XXS", "outcome": "stopped", "item": null, "error": "Nothing in the listings matches 'wetsuit' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, no listing comes in size XXS.", "duration_ms": 9120, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {"search_listings": 9037}}
+{"ts": "2026-11-19T02:00:46.905+00:00", "request_id": "820dd2c0", "route": "/ask", "status": 200, "query": "designer ballgown size XXS under $5", "outcome": "stopped", "item": null, "error": "Nothing in the listings matches 'designer ballgown' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, nothing is listed under $5 (the cheapest listing is $12), and no listing comes in size XXS.", "duration_ms": 17623, "waited_ms": 9115, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {"search_listings": 8506}}
+```
+
+**Did it help?**
+- **Yes, for what it targeted.** Criterion 3 went from 1/2 to 2/2 in every
+  trial.
+  - Before the fix, 7,375–8,091 ms went missing from each queued record.
+  - After it, the gaps between client and log were 112–269 ms across all
+    six requests.
+  - The queued request's `waited_ms` was 7,909–9,115 ms, where before it was
+    always 0.
+- **Nothing else changed verdict.** 1 and 2 still miss for the reasons
+  diagnosed, and 4 and 5 still hold.
+- **What it cost elsewhere:**
+  - **Criterion 1's run times doubled,** from a median of 9.5 s to 18.7 s
+    (up to 28.3 s). All of the extra time was in the two model stages, often
+    7–16 s each against about 1 s before. The MCP stages didn't move: a
+    median of 8.2 s, against 7.6 s.
+  - **The likely cause is the model service, not the threads.** I checked
+    with 4 extra model calls right after the run:
+    - Two direct `generate()` calls from my Mac, with no server and no
+      threads, took 9.0 s and 2.6 s (about 1 s each earlier in the day).
+    - A hosted run took 35.7 s in `suggest_outfit` alone.
+    - A worker setting on Render can't slow a call made from my laptop, so
+      the slowdown came from the shared free-tier key or the service.
+  - **What I didn't rule out:** that the threads add a little on top.
+    Settling it would mean running the before and after configurations in
+    the same hour.
+  - **Either way,** criterion 1 misses with MCP alone (7–8.5 s of the 8 s
+    budget).
+- **The real cost of the fix:** two threads accept two connections at once,
+  so a queued request now holds a thread while it waits on the lock. That's
+  free at two requests. Under heavy load, gunicorn would queue the third, the
+  same blind spot one step later. The load observation will show whether
+  that happens.
