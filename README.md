@@ -1891,7 +1891,7 @@ with the cache off, on 2026-11-18. The reports are
 |---|---|---|
 | Setup | Render signup, a Blueprint from `render.yaml`, the key pasted into the dashboard. First build: 1 min 4 s | A fresh clone, venv, `pip install`, `.env`, and port 5001 instead of 5000 |
 | Server | gunicorn, one sync worker | Flask's development server |
-| Time per completed run: median (mean) | 10.1 s (11.7 s) | 3.6 s (7.5 s) |
+| Time per completed run, server-side `duration_ms`: median (mean) | 10.1 s (11.7 s) | 3.6 s (7.5 s) |
 | Slowest run, and why | 25.6 s: the first request after the deploy (first MCP process 9.1 s, first model call 8.6 s) | 37.4 s: one `create_fit_card` call took 35.6 s at the model, with no retry |
 | One MCP call (search or price) | about 4 s | about 0.5 s |
 | Tokens per run | 728 in, 185 out | 723 in, 180 out |
@@ -2011,6 +2011,11 @@ day, which is 250 runs:
 - A hundred people asking three times each doesn't: 300 runs is 600
   requests. That would need the paid tier, at 300 × $0.000680 = $0.20 a
   day.
+
+**Checked again in the trials.** Criterion 5 recomputed the cost from the
+logged tokens on 30 more runs, across the before and after sets. The trial
+means were $0.000630–$0.000688, and every run made exactly 2 model calls. So
+the $0.00068 per run above holds, and so does the hundred-a-day arithmetic.
 
 **Run Log and Verdicts**
 
@@ -2195,3 +2200,82 @@ values are 4 ms apart). The one that queued records its wait: the client took
   free at two requests. Under heavy load, gunicorn would queue the third, the
   same blind spot one step later. The load observation will show whether
   that happens.
+
+**What's Still Broken**
+
+Two criteria are still missed after the improvement.
+
+**Criterion 1, MISSED (0/5 in every trial): warm runs take 9–10 s, not
+under 8.**
+- **What I'd do:** keep one MCP server process open and reuse its session,
+  instead of starting `mcp_server.py` for each call. That removes about
+  3.7 s per call on the host, or about 7.5 s per run, which would put a warm
+  run near 2–3 s.
+- **Why I stopped:** it means rewriting `mcp_client.call_tool`, given
+  plumbing that wraps `asyncio.run()` around one connection per call. A
+  long-lived session needs its own event loop in a thread, and has to
+  restart if the server dies. That's more than a one-change improvement
+  should carry, and it touches unit 4's MCP evidence.
+
+**Criterion 2, MISSED (2/5 in every trial): three malformed bodies get
+Flask's HTML 500.**
+- **What I'd do:** in `serve.py::_answer`, reject anything that isn't a JSON
+  object with a string `query`, with the same JSON 400 the empty query
+  already gets. That's about five lines.
+- **Why I stopped:** the one improvement went to criterion 3, the log's own
+  accuracy. This fix is the declared second improvement (stretch), so it
+  will get its own measured run.
+
+**Also broken, outside the five criteria:**
+- **The queue blind spot moved, but it isn't gone.** Two threads accept two
+  requests, so a third arriving while two are in flight waits in gunicorn's
+  queue, unseen, as before.
+- **The log is gone when the free instance sleeps** (the log was empty after
+  the 17.3 s wake-up in M3). The copies in `results/` exist only because
+  `measure.py` and `trials.py` saved them.
+- **`generate.py`'s 300-calls-per-process budget** was built for a CLI
+  session. A server that makes 300 model calls without restarting (150 runs)
+  would start answering every request with a 500. The free instance's sleep
+  resets it, so I never reached it.
+- **`GET /log` is public.** It holds shopping queries only (no keys, no
+  wardrobe), but anyone with the URL can read them.
+
+**The one thing I'd do first:** the persistent MCP session (criterion 1).
+- It's the biggest cost on every single request: 80% of a warm run, for
+  every user.
+- Criterion 2's fix only matters to callers who send broken JSON.
+- If this were real, a user waits 10 s for every answer today; with the fix,
+  they'd wait 2–3 s.
+
+**How I Used AI**
+
+**1. The after run looked worse, and I asked for proof before blaming the
+fix.**
+- **What I asked:** after the threaded-worker fix, I asked Claude to run
+  the after set and compare it with the before.
+- **What I got:**
+  - Criterion 3 was fixed, but criterion 1's run times had doubled (a median
+    of 9.5 s became 18.7 s).
+  - Instead of calling it the fix's cost or calling it noise, Claude showed
+    that all of the extra time was inside the two model stages, while the MCP
+    stages hadn't moved.
+  - It asked whether my other project was using the shared key at the time.
+- **What I changed:**
+  - I wasn't sure, so I approved a 4-call probe. A direct model call from my
+    Mac, with no server and no threads, also took 9.0 s, so the slowdown
+    followed the model service, not my change.
+  - "Did it help" now reports both the win and the slowdown, with the probe
+    and what it didn't rule out.
+
+**2. A fresh model's scope check was wrong about my own code.**
+- **What I asked:** at Milestone 1 I used the brief's prompt: break the
+  extension into its separate pieces and count them.
+- **What I got:** six pieces. One claim was that logging token counts would
+  need a change to the agent, because "the agent doesn't expose these
+  today."
+- **What I changed:**
+  - Nothing in the plan. `generate.py` already keeps running totals
+    (`call_count()`, `token_counts()`), so `serve.py` subtracts the count
+    before a run from the count after it, and `agent.py` stayed untouched.
+  - I kept `/log` as the only optional piece, and recorded the other five as
+    what Shape A requires.
