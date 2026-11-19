@@ -225,8 +225,12 @@ def _answer(record: dict) -> tuple[dict, int]:
     # assume a dict holding a string; a body that isn't one still goes on record.
     record["query"] = (payload.get("query") if isinstance(payload, dict)
                        else request.get_data(as_text=True)[:200])
-    payload = payload or {}
-    query = (payload.get("query") or "").strip()
+    # Second improvement (criterion 2): anything that isn't a JSON object
+    # holding a string query gets the 400 below, not an AttributeError and
+    # Flask's HTML 500.
+    payload = payload if isinstance(payload, dict) else {}
+    query = payload.get("query")
+    query = query.strip() if isinstance(query, str) else ""
     if not query:
         # 400 rather than a stack trace: the caller can act on this one.
         message = ("Send JSON with a 'query' field, e.g. "
