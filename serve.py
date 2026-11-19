@@ -158,6 +158,10 @@ agent.create_fit_card = _timed(agent.create_fit_card, "create_fit_card")
 #
 #     gunicorn serve:app              ← right: the DEFAULT sync worker
 #     gunicorn -k gevent serve:app    ← breaks every MCP call you make
+#
+# Since the capstone the host runs `--threads 2` (render.yaml). That is still
+# not async: a worker thread has no event loop running, so asyncio.run() is
+# fine. It lets a second request reach the lock, so waited_ms can see it.
 
 _one_at_a_time = threading.Lock()
 

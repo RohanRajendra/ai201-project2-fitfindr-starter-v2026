@@ -170,7 +170,7 @@ Capstone section says what each record holds.
 | Platform | Render, free web service: 512 MB, and it sleeps after 15 idle minutes |
 | How it got there | `render.yaml` as a Blueprint: New → Blueprint → this repo, branch `main` → paste `GEMINI_API_KEY` when asked → Apply. The first build took 1 min 4 s. Every merge to `main` redeploys it; work on `dev` reaches the host only when it's merged |
 | Build | `pip install -r requirements.txt` (versions pinned there) |
-| Start | `gunicorn serve:app --workers 1 --timeout 120` (`render.yaml` says why) |
+| Start | `gunicorn serve:app --workers 1 --threads 2 --timeout 120` (`render.yaml` says why; `--threads 2` since the capstone improvement) |
 | Python | 3.13.2, set by `PYTHON_VERSION` |
 | Environment | `GEMINI_API_KEY` (typed into Render's dashboard, never committed), `AI201_CACHE=0`, `PYTHON_VERSION=3.13.2`. Render sets `PORT`, and gunicorn binds to it |
 | Model files | None: the model is called over the API |

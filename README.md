@@ -2078,3 +2078,68 @@ trial 3 records, in order:
 per trial was $0.000630, $0.000671 and $0.000665. The most expensive single
 run cost $0.000746 (chunky knit cardigan: 745 tokens in, 209 out), under the
 $0.0010 per-run cap.
+
+**Verdicts and diagnoses (before run)**
+
+- **1. MISSED (0/5 in every trial): `mcp_client.call_tool`, run twice per
+  request on Render's free CPU.**
+  - The runs took 8.9–10.4 s. The two MCP stages alone took 7.1–8.5 s of
+    that, and the model only 1.3–2.2 s.
+  - Each `call_tool` starts `mcp_server.py` as a new Python process, and
+    that process imports the MCP SDK before it does anything. That takes
+    0.53 s on my Mac and about 3.7 s on the host.
+  - The mechanism: latency scales with process starts (two per run), not
+    with the work. The search itself is plain code over 40 listings.
+- **2. MISSED (2/5 in every trial): `serve.py::_answer`, the body
+  parsing.**
+  - The code assumes the JSON body is a dict holding a string. A list or a
+    bare string fails on `.get`, and a number fails on `.strip`.
+  - The `AttributeError` escapes the route, so Flask answers with its own
+    HTML 500. That page has no `X-Request-Id`, so nobody can find its record
+    in the log.
+- **3. MISSED (1/2 in every trial): gunicorn's single sync worker, from the
+  start command in `render.yaml`.**
+  - A sync worker accepts one connection at a time. The second request
+    waits in the socket queue, before Flask, so `serve.py`'s clock (and its
+    `ts`) starts only when the first request finishes.
+  - So the record is short by exactly the first request's run time:
+    7,375–8,091 ms, against first runs of 7.2–8.0 s. `waited_ms` stays 0,
+    because the lock is never contended.
+- **4. MET** and **5. MET.**
+  - The `finally` logged every request, including the three crashes per
+    trial.
+  - Every run made exactly 2 model calls, with a highest mean of $0.000671.
+  - Both have room: no retry and no worker kill happened in these 3 trials.
+    5's mean sits 16% under its cap.
+
+**The pattern:** 1 and 3 both come from the deploy layer, not the agent.
+Render's free CPU makes the per-call process start expensive (1), and
+gunicorn's default worker hides the queue from the app (3). Both were
+invisible on my Mac, where an MCP start costs 0.5 s and Flask's server is
+threaded. 2 is a plain input-handling bug in `serve.py`.
+
+**The Improvement**
+
+- **What I changed:** criterion 3's miss, by switching the start command in
+  `render.yaml` from `--workers 1` to `--workers 1 --threads 2`. I also
+  updated the comment in `serve.py` and the start-command row in RUNNING.md.
+- **Why:** with two threads, gunicorn accepts the second request at once.
+  It reaches `serve.py::ask`, which starts its clock, and then waits on the
+  one-at-a-time lock. `waited_ms` and `duration_ms` now include the wait
+  instead of missing it.
+- **What stays the same:**
+  - The lock still runs one agent at a time, so the 512 MB budget is the
+    same.
+  - A worker thread has no running event loop, so `mcp_client`'s
+    `asyncio.run()` still works (gevent would break it).
+- **Checked locally first** (gunicorn on my Mac, 0 model calls). Two
+  impossible queries sent at once:
+  - With one sync worker, the second client waited 3.31 s and its record
+    said 1,293 ms, with `waited_ms` 0.
+  - With `--threads 2`, the client waited 2.58 s and its record said
+    2,579 ms, with `waited_ms` 1,485.
+- **Why this miss and not the others:** it's the log's own truthfulness,
+  which is what this unit added. The change is one line, and it follows
+  directly from the diagnosis. Criterion 1's fix (keeping one MCP process
+  open) is a much bigger change to given plumbing, so it's in What's Still
+  Broken. Criterion 2's fix is the declared second improvement.
