@@ -2320,3 +2320,46 @@ The three bodies that used to crash, from trial 3:
 
 **What's still broken, updated:** only criterion 1 is still missed. What I'd
 do about it, and why I stopped, is unchanged (see What's Still Broken).
+
+**Stretch: Load Observation**
+
+- **What "normal" is:** one request at a time, as in every trial. Each
+  impossible query (two MCP searches, no model call) took 8.2 s alone.
+- **Ten times that:** 10 of the same request sent at once to the hosted
+  service, at 0 model calls (2026-11-18). The raw output is in
+  `results/load_2026-11-18_2220.txt`.
+
+| Request (by finish) | Client ms | Logged `duration_ms` | `waited_ms` | Missing from the log |
+|---|---|---|---|---|
+| 1 | 8,668 | 8,550 | 0 | 118 |
+| 2 | 16,764 | 16,620 | 8,525 | 144 |
+| 3 | 25,065 | 16,394 | 8,002 | 8,671 |
+| 4 | 33,168 | 16,406 | 8,299 | 16,762 |
+| 5 | 41,443 | 16,397 | 8,104 | 25,046 |
+| 6 | 49,750 | 16,595 | 8,197 | 33,155 |
+| 7 | 57,961 | 16,505 | 8,397 | 41,456 |
+| 8 | 66,357 | 16,602 | 8,197 | 49,755 |
+| 9 | 74,849 | 16,899 | 8,403 | 57,950 |
+| 10 | 82,779 | 16,397 | 8,494 | 66,382 |
+
+**What changed:**
+- **Errors: none.** All 10 got a 200, and all 10 left a record.
+- **Memory:** the 512 MB instance held up, because the lock still runs one
+  agent, and so one MCP process, at a time.
+- **Latency:** grew linearly, about 8.3 s per request ahead in the line.
+  The last caller waited 82.8 s.
+- **Cost:** none for this test (no model calls). With real queries, each
+  of the 10 would still cost about $0.00068, but at about 10 s per run the
+  last would wait about 100 s.
+- **What the log saw:** two threads let only one extra request reach the
+  lock. From the third request on, each record shows one run plus one wait
+  (about 16.4 s), while the real wait kept growing. By the tenth request,
+  66.4 s was invisible.
+- **So:** improvement 1 fixed the two-request case (criterion 3), not the
+  ten-request one.
+- **The fix, if this were real:** time the request from before gunicorn's
+  queue. Code in `serve.py`, or a gunicorn hook, only starts running after
+  the queue, so that would need a front proxy that stamps each request's
+  arrival time. Some hosts add a header like `X-Request-Start`; I didn't check
+  whether Render does. The simpler option is enough threads to hold every
+  waiting request, which costs a little memory per thread but not per run.

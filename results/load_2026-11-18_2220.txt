@@ -1,0 +1,15 @@
+start 22:20:04
+health 357 ms
+baseline alone: 200 8191 ms
+10 at once: wall 82.8s
+  200 client   8668 ms  logged 8550  waited 0  missing 118  id=a86664ce
+  200 client  16764 ms  logged 16620  waited 8525  missing 144  id=a918f7b3
+  200 client  25065 ms  logged 16394  waited 8002  missing 8671  id=1eccb741
+  200 client  33168 ms  logged 16406  waited 8299  missing 16762  id=8197d52f
+  200 client  41443 ms  logged 16397  waited 8104  missing 25046  id=388294fb
+  200 client  49750 ms  logged 16595  waited 8197  missing 33155  id=26197c9e
+  200 client  57961 ms  logged 16505  waited 8397  missing 41456  id=dfe1bcc6
+  200 client  66357 ms  logged 16602  waited 8197  missing 49755  id=da7bc18f
+  200 client  74849 ms  logged 16899  waited 8403  missing 57950  id=1dea942e
+  200 client  82779 ms  logged 16397  waited 8494  missing 66382  id=6e436fed
+records found: 10 of 10
