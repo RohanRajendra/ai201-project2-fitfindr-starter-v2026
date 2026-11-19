@@ -2011,3 +2011,70 @@ day, which is 250 runs:
 - A hundred people asking three times each doesn't: 300 runs is 600
   requests. That would need the paid tier, at 300 × $0.000680 = $0.20 a
   day.
+
+**Run Log and Verdicts**
+
+The before run is three trials against the hosted service, following the
+"One trial" steps in `criteria.md`. It ran on 2026-11-18 from `trials.py::main`
+and cost 32 model calls. The full output, with every request and every log
+record, is in `results/capstone_before_2026-11-18_1940.md`.
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Warm runs return a fit card in under 8 s | 4 of 5, 3 of 3 trials | 0/5 | 0/5 | 0/5 | MISSED |
+| 2. A malformed request gets a 400 | 5 of 5, 3 of 3 trials | 2/5 | 2/5 | 2/5 | MISSED |
+| 3. The log's time matches the wait when requests overlap | 2 of 2, 3 of 3 trials | 1/2 | 1/2 | 1/2 | MISSED |
+| 4. Every request leaves one matching record | all, 3 of 3 trials | 13/13 | 12/12 | 12/12 | MET |
+| 5. 2 model calls, mean cost ≤ $0.0008 | 5 of 5 and mean ≤ $0.0008, 3 of 3 trials | 5/5, $0.000630 | 5/5, $0.000671 | 5/5, $0.000665 | MET |
+
+Real output follows, from trial 3 unless a line says otherwise. The client
+times come from `trials.py::curl`. The records come from `serve.py::ask`,
+read back through `GET /log`.
+
+**Criterion 1.** Client times for the five runs were 8.9–10.4 s across all three
+trials, so no run came in under 8 s. A typical record:
+```jsonl
+{"ts": "2026-11-19T00:39:12.200+00:00", "request_id": "39947acb", "route": "/ask", "status": 200, "query": "90s track jacket in size M", "outcome": "fit_card", "item": "90s Track Jacket — Navy/White Stripe ($45.0, poshmark)", "error": null, "duration_ms": 8972, "waited_ms": 0, "model_calls": 2, "tokens_in": 721, "tokens_out": 162, "stages_ms": {"search_listings": 3656, "compare_price": 3703, "suggest_outfit": 936, "create_fit_card": 676}}
+```
+
+**Criterion 2.** The same three bodies failed in all three trials:
+
+| Body | Status | X-Request-Id |
+|---|---|---|
+| `[1, 2]` | 500, HTML page | none |
+| `{"query": 42}` | 500, HTML page | none |
+| `"vintage tee"` | 500, HTML page | none |
+| `{"query": ""}` | 400, JSON `error` | yes |
+| `not json` | 400, JSON `error` | yes |
+
+Two of the crash records:
+```jsonl
+{"ts": "2026-11-19T00:39:57.968+00:00", "request_id": "3231ba60", "route": "/ask", "status": 500, "query": "[1, 2]", "outcome": "crashed", "item": null, "error": "AttributeError: 'list' object has no attribute 'get'", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+{"ts": "2026-11-19T00:39:58.129+00:00", "request_id": "d4ffa0db", "route": "/ask", "status": 500, "query": 42, "outcome": "crashed", "item": null, "error": "AttributeError: 'int' object has no attribute 'strip'", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+```
+
+**Criterion 3.** Both requests were sent at the same moment. The ballgown
+client took 7,843 ms and the wetsuit client 15,538 ms. Their records:
+```jsonl
+{"ts": "2026-11-19T00:39:58.955+00:00", "request_id": "9c1be737", "route": "/ask", "status": 200, "query": "designer ballgown size XXS under $5", "outcome": "stopped", "item": null, "error": "Nothing in the listings matches 'designer ballgown' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, nothing is listed under $5 (the cheapest listing is $12), and no listing comes in size XXS.", "duration_ms": 7691, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {"search_listings": 7608}}
+{"ts": "2026-11-19T00:40:06.646+00:00", "request_id": "9a9c7601", "route": "/ask", "status": 200, "query": "wetsuit size XXS", "outcome": "stopped", "item": null, "error": "Nothing in the listings matches 'wetsuit' at any size or price. Try a broader word for the item, like 'dress', 'jacket' or 'tee'. Also, no listing comes in size XXS.", "duration_ms": 7699, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {"search_listings": 7613}}
+```
+The wetsuit record says 7,699 ms, but its client waited 15,538 ms, so 7,839 ms is
+missing from the log. Its `ts` is 7.7 s after the moment it was sent. All three
+trials looked the same: 7,375–8,091 ms was missing each time.
+
+**Criterion 4.** Each trial's records lined up one for one with the requests
+sent: 13 in trial 1, which had a warm-up, and 12 in trials 2 and 3. Every
+`status` matched what the client saw, including the three HTML 500s. The
+trial 3 records, in order:
+
+| Part | Statuses |
+|---|---|
+| Criterion 1 | 200 ×5 |
+| Criterion 2 | 500, 500, 500, 400, 400 |
+| Criterion 3 | 200, 200 |
+
+**Criterion 5.** Every criterion 1 record showed `model_calls` 2. The mean cost
+per trial was $0.000630, $0.000671 and $0.000665. The most expensive single
+run cost $0.000746 (chunky knit cardigan: 745 tokens in, 209 out), under the
+$0.0010 per-run cap.
