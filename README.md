@@ -2279,3 +2279,87 @@ fix.**
     before a run from the count after it, and `agent.py` stayed untouched.
   - I kept `/log` as the only optional piece, and recorded the other five as
     what Shape A requires.
+
+**Stretch: Second Improvement (criterion 2)**
+
+- **What I changed:** `serve.py::_answer` now treats anything that isn't a
+  JSON object holding a string `query` the same way as an empty query: a JSON
+  400 with an `error` and an `X-Request-Id`. It is three lines, following the
+  diagnosis that the code assumed a dict holding a string.
+- **The third run** (2026-11-18, `trials.py::main`, 32 model calls). Full
+  output in `results/capstone_third_2026-11-18_2215.md`.
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Warm runs return a fit card in under 8 s | 4 of 5, 3 of 3 trials | 0/5 | 0/5 | 0/5 | MISSED |
+| 2. A malformed request gets a 400 | 5 of 5, 3 of 3 trials | **5/5** | **5/5** | **5/5** | **MET** (was MISSED) |
+| 3. The log's time matches the wait when requests overlap | 2 of 2, 3 of 3 trials | 2/2 | 2/2 | 2/2 | MET |
+| 4. Every request leaves one matching record | all, 3 of 3 trials | 13/13 | 12/12 | 12/12 | MET |
+| 5. 2 model calls, mean cost ≤ $0.0008 | 5 of 5 and mean ≤ $0.0008, 3 of 3 trials | 5/5, $0.000673 | 5/5, $0.000662 | 5/5, $0.000695 | MET |
+
+The three bodies that used to crash, from trial 3:
+```jsonl
+{"ts": "2026-11-19T03:15:22.300+00:00", "request_id": "eb6d2def", "route": "/ask", "status": 400, "query": "[1, 2]", "outcome": "rejected", "item": null, "error": "Send JSON with a 'query' field, e.g. {\"query\": \"vintage graphic tee under $30\"}", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+{"ts": "2026-11-19T03:15:22.466+00:00", "request_id": "8f5333fd", "route": "/ask", "status": 400, "query": 42, "outcome": "rejected", "item": null, "error": "Send JSON with a 'query' field, e.g. {\"query\": \"vintage graphic tee under $30\"}", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+{"ts": "2026-11-19T03:15:22.615+00:00", "request_id": "78bf6f5f", "route": "/ask", "status": 400, "query": "\"vintage tee\"", "outcome": "rejected", "item": null, "error": "Send JSON with a 'query' field, e.g. {\"query\": \"vintage graphic tee under $30\"}", "duration_ms": 0, "waited_ms": 0, "model_calls": 0, "tokens_in": 0, "tokens_out": 0, "stages_ms": {}}
+```
+
+**Did it help?**
+- **Yes.** Criterion 2 went from 2/5 to 5/5 in every trial, and all five
+  bodies now carry a request id that leads to their record.
+- **What it cost:** nothing seen. The other four criteria kept their
+  verdicts.
+- **One trade to be aware of:** the error message is the same for every bad
+  body, so a caller who sent `{"query": 42}` is told to send a `query`
+  field, not that the field must be text.
+- **A side result on the after run's slowdown:** this run still has the
+  threaded worker, yet criterion 1's median came back to 10.3 s (from
+  18.7 s), with model stages at a median of 1.8 s. That supports the probe:
+  the after run's slow model calls came from the service, not from
+  `--threads 2`.
+
+**What's still broken, updated:** only criterion 1 is still missed. What I'd
+do about it, and why I stopped, is unchanged (see What's Still Broken).
+
+**Stretch: Load Observation**
+
+- **What "normal" is:** one request at a time, as in every trial. Each
+  impossible query (two MCP searches, no model call) took 8.2 s alone.
+- **Ten times that:** 10 of the same request sent at once to the hosted
+  service, at 0 model calls (2026-11-18). The raw output is in
+  `results/load_2026-11-18_2220.txt`.
+
+| Request (by finish) | Client ms | Logged `duration_ms` | `waited_ms` | Missing from the log |
+|---|---|---|---|---|
+| 1 | 8,668 | 8,550 | 0 | 118 |
+| 2 | 16,764 | 16,620 | 8,525 | 144 |
+| 3 | 25,065 | 16,394 | 8,002 | 8,671 |
+| 4 | 33,168 | 16,406 | 8,299 | 16,762 |
+| 5 | 41,443 | 16,397 | 8,104 | 25,046 |
+| 6 | 49,750 | 16,595 | 8,197 | 33,155 |
+| 7 | 57,961 | 16,505 | 8,397 | 41,456 |
+| 8 | 66,357 | 16,602 | 8,197 | 49,755 |
+| 9 | 74,849 | 16,899 | 8,403 | 57,950 |
+| 10 | 82,779 | 16,397 | 8,494 | 66,382 |
+
+**What changed:**
+- **Errors: none.** All 10 got a 200, and all 10 left a record.
+- **Memory:** the 512 MB instance held up, because the lock still runs one
+  agent, and so one MCP process, at a time.
+- **Latency:** grew linearly, about 8.3 s per request ahead in the line.
+  The last caller waited 82.8 s.
+- **Cost:** none for this test (no model calls). With real queries, each
+  of the 10 would still cost about $0.00068, but at about 10 s per run the
+  last would wait about 100 s.
+- **What the log saw:** two threads let only one extra request reach the
+  lock. From the third request on, each record shows one run plus one wait
+  (about 16.4 s), while the real wait kept growing. By the tenth request,
+  66.4 s was invisible.
+- **So:** improvement 1 fixed the two-request case (criterion 3), not the
+  ten-request one.
+- **The fix, if this were real:** time the request from before gunicorn's
+  queue. Code in `serve.py`, or a gunicorn hook, only starts running after
+  the queue, so that would need a front proxy that stamps each request's
+  arrival time. Some hosts add a header like `X-Request-Start`; I didn't check
+  whether Render does. The simpler option is enough threads to hold every
+  waiting request, which costs a little memory per thread but not per run.
